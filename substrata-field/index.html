@@ -65,6 +65,7 @@ const MODULES = [
   { id:"core",   label:"Core",   icon:"disc",      color: T.rock   },
   { id:"photos", label:"Photos", icon:"camera",    color: T.teal   },
   { id:"notes",  label:"Cons.",  icon:"package",   color: "#f59e0b"},
+  { id:"install",label:"Install",icon:"tool",      color: "#10b981"},
 ];
 
 function ModuleIcon({ name, size=20, color="currentColor", strokeWidth=2 }) {
@@ -76,6 +77,7 @@ function ModuleIcon({ name, size=20, color="currentColor", strokeWidth=2 }) {
     "camera":    ["M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z","M12 17a4 4 0 100-8 4 4 0 000 8z"],
     "file-text": ["M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z","M14 2v6h6","M16 13H8","M16 17H8","M10 9H8"],
     "package":   ["M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z","M3.27 6.96L12 12.01l8.73-5.05","M12 22.08V12"],
+    "tool":     ["M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"],
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -3334,6 +3336,682 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast }) {
 }
 
 
+// ─── INSTALLATIONS MODULE ─────────────────────────────────────────────
+
+const INSTALL_TYPES = [
+  { v:"standpipe_piezometer", l:"Standpipe Piezometer",     abbr:"SP"  },
+  { v:"vwp",                  l:"Vibrating Wire Piezo (VWP)",abbr:"VWP" },
+  { v:"inclinometer",         l:"Inclinometer Casing",       abbr:"INC" },
+  { v:"monitoring_well",      l:"Monitoring Well",           abbr:"MW"  },
+  { v:"gas_monitoring",       l:"Gas Monitoring",            abbr:"GAS" },
+];
+
+const PIPE_MATERIALS = ["PVC","HDPE","SS","Other"];
+
+const BACKFILL_MATERIALS = [
+  { v:"sand_pack",      l:"Sand Pack / Filter Pack", unit:"kg"  },
+  { v:"pea_gravel",     l:"Pea Gravel",               unit:"kg"  },
+  { v:"bentonite_pellets", l:"Bentonite Pellets",     unit:"kg"  },
+  { v:"bentonite_grout",   l:"Bentonite Grout",       unit:"L"   },
+  { v:"cement_grout",      l:"Cement Grout",          unit:"L"   },
+  { v:"concrete",          l:"Concrete",              unit:"L"   },
+  { v:"native_backfill",   l:"Native Backfill / Cuttings", unit:"m" },
+];
+
+const BACKFILL_UNITS = ["kg","L","m","bags","m³"];
+
+const SURFACE_COMPLETIONS = [
+  { v:"flush_toby",   l:"Flush Toby Box"          },
+  { v:"monument",     l:"Above-Ground Monument"   },
+  { v:"concrete_pad", l:"Concrete Pad"            },
+  { v:"bollard",      l:"Bollard Protection"       },
+  { v:"flush_cover",  l:"Flush Cover Plate"        },
+  { v:"other",        l:"Other"                    },
+];
+
+// New blank backfill layer
+const newLayer = () => ({
+  id:       `bf_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
+  material: "",
+  top:      "",
+  base:     "",
+  qty:      "",
+  unit:     "kg",
+});
+
+// New blank instrument record
+const newInstrument = () => ({
+  id:             `inst_${Date.now()}`,
+  inst_type:      "",
+  ref_id:         "",
+  pipe_material:  "",
+  pipe_diameter:  "",
+  pipe_length:    "",
+  stickup:        "",
+  casing_top:     "",
+  casing_bottom:  "",
+  screen_top:     "",
+  screen_bottom:  "",
+  seal_top:       "",
+  seal_bottom:    "",
+  backfill:       [newLayer()],
+  surface:        "",
+  surface_other:  "",
+  remarks:        "",
+});
+
+// ── Small depth input ──────────────────────────────────────────────────
+function DepthInput({ label, value, onChange, placeholder }) {
+  return (
+    <div style={{ flex:1 }}>
+      <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+        color:T.dim, marginBottom:4, letterSpacing:"0.02em" }}>{label}</div>
+      <input type="number" value={value} step="0.01" min="0"
+        inputMode="decimal" onChange={e => onChange(e.target.value)}
+        placeholder={placeholder||"—"}
+        style={{ width:"100%", background:T.surface2,
+          border:`1px solid ${T.border}`, borderRadius:7,
+          color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
+          padding:"8px 6px", textAlign:"center", outline:"none",
+          WebkitAppearance:"none" }}/>
+    </div>
+  );
+}
+
+// ── Backfill layer row ─────────────────────────────────────────────────
+function BackfillLayerRow({ layer, idx, onChange, onDelete, isOnly }) {
+  const selMat = BACKFILL_MATERIALS.find(m => m.v === layer.material);
+  return (
+    <div style={{ background:T.surface2, borderRadius:9,
+      border:`1px solid ${T.border}`, padding:"10px 12px",
+      marginBottom:8 }}>
+      {/* Layer header */}
+      <div style={{ display:"flex", alignItems:"center",
+        justifyContent:"space-between", marginBottom:8 }}>
+        <span style={{ fontFamily:T.sans, fontSize:11, fontWeight:700,
+          color:T.dim, letterSpacing:"0.08em" }}>LAYER {idx+1}</span>
+        {!isOnly && (
+          <button onClick={onDelete}
+            style={{ background:"none", border:"none", color:T.dim,
+              fontSize:18, cursor:"pointer", lineHeight:1, padding:"0 2px" }}>×</button>
+        )}
+      </div>
+
+      {/* Material pills */}
+      <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:10 }}>
+        {BACKFILL_MATERIALS.map(m => (
+          <button key={m.v} onClick={() => onChange("material", m.v)}
+            style={{ padding:"6px 11px", borderRadius:7, fontSize:12,
+              fontFamily:T.sans, fontWeight: layer.material===m.v ? 700 : 500,
+              border:`2px solid ${layer.material===m.v ? "#8b5cf6" : T.border}`,
+              background: layer.material===m.v ? "#8b5cf6" : T.surface,
+              color: layer.material===m.v ? T.white : T.text,
+              cursor:"pointer", WebkitTapHighlightColor:"transparent" }}>
+            {m.l}
+          </button>
+        ))}
+      </div>
+
+      {/* Depth row */}
+      <div style={{ display:"flex", gap:6, marginBottom:8 }}>
+        <DepthInput label="Top (m)"  value={layer.top}  onChange={v => onChange("top",v)}  placeholder="0.00"/>
+        <div style={{ color:T.dim, fontSize:16, paddingTop:24 }}>↓</div>
+        <DepthInput label="Base (m)" value={layer.base} onChange={v => onChange("base",v)} placeholder="1.00"/>
+      </div>
+
+      {/* Quantity row */}
+      <div style={{ display:"flex", gap:8, alignItems:"flex-end" }}>
+        <div style={{ flex:1 }}>
+          <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+            color:T.dim, marginBottom:4 }}>Quantity</div>
+          <input type="number" value={layer.qty} inputMode="decimal" step="0.1"
+            onChange={e => onChange("qty", e.target.value)}
+            placeholder="0"
+            style={{ width:"100%", background:T.surface,
+              border:`1px solid ${T.border}`, borderRadius:7,
+              color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
+              padding:"8px", textAlign:"center", outline:"none",
+              WebkitAppearance:"none" }}/>
+        </div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+            color:T.dim, marginBottom:4 }}>Unit</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+            {BACKFILL_UNITS.map(u => (
+              <button key={u} onClick={() => onChange("unit", u)}
+                style={{ padding:"7px 10px", borderRadius:6, fontSize:12,
+                  fontFamily:T.sans, fontWeight: layer.unit===u ? 700 : 500,
+                  border:`2px solid ${layer.unit===u ? "#8b5cf6" : T.border}`,
+                  background: layer.unit===u ? "#8b5cf6" : T.surface,
+                  color: layer.unit===u ? T.white : T.text,
+                  cursor:"pointer", WebkitTapHighlightColor:"transparent" }}>
+                {u}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Single instrument form ─────────────────────────────────────────────
+function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
+  const set = (f, v) => onChange({ ...inst, [f]: v });
+  const accentI = "#10b981";
+
+  const updateLayer = (layerId, field, value) => {
+    onChange({
+      ...inst,
+      backfill: inst.backfill.map(l =>
+        l.id === layerId ? { ...l, [field]: value } : l
+      ),
+    });
+  };
+
+  const addLayer = () => onChange({
+    ...inst, backfill: [...inst.backfill, newLayer()],
+  });
+
+  const deleteLayer = (layerId) => onChange({
+    ...inst,
+    backfill: inst.backfill.filter(l => l.id !== layerId),
+  });
+
+  return (
+    <div style={{ background:T.surface, borderRadius:12,
+      border:`1.5px solid ${T.border}`,
+      boxShadow:"0 1px 4px rgba(0,0,0,0.06)",
+      margin:"0 12px 12px", overflow:"hidden" }}>
+
+      {/* Instrument header */}
+      <div style={{ background:accentI+"18",
+        borderBottom:`1px solid ${accentI+"30"}`,
+        padding:"10px 14px",
+        display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <div style={{ fontFamily:T.sans, fontSize:13, fontWeight:700,
+          color:accentI }}>
+          Instrument {idx + 1}
+          {inst.ref_id && <span style={{ marginLeft:8, fontWeight:500,
+            color:T.dim }}>— {inst.ref_id}</span>}
+        </div>
+        {!isOnly && (
+          <button onClick={onDelete}
+            style={{ padding:"4px 10px", borderRadius:6,
+              background:"transparent", border:`1px solid ${T.red}`,
+              color:T.red, fontFamily:T.sans, fontSize:11,
+              fontWeight:600, cursor:"pointer" }}>
+            Remove
+          </button>
+        )}
+      </div>
+
+      <div style={{ padding:"12px 14px" }}>
+
+        {/* Type */}
+        <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+          color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
+          marginBottom:6 }}>Instrument Type ✱</div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
+          {INSTALL_TYPES.map(t => (
+            <button key={t.v} onClick={() => set("inst_type", inst.inst_type===t.v?"":t.v)}
+              style={{ padding:"8px 13px", borderRadius:8,
+                border:`2px solid ${inst.inst_type===t.v ? accentI : T.border}`,
+                background: inst.inst_type===t.v ? accentI : T.surface2,
+                color: inst.inst_type===t.v ? T.white : T.text,
+                fontFamily:T.sans, fontSize:13, fontWeight: inst.inst_type===t.v ? 700 : 500,
+                cursor:"pointer", WebkitTapHighlightColor:"transparent" }}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+
+        {/* Reference ID */}
+        <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+          color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
+          marginBottom:6 }}>Reference ID</div>
+        <input type="text" value={inst.ref_id}
+          onChange={e => set("ref_id", e.target.value)}
+          placeholder="e.g. PZ-01, VWP-A…"
+          style={{ width:"100%", background:T.surface2,
+            border:`1px solid ${T.border}`, borderRadius:8,
+            color:T.text, fontFamily:T.sans, fontSize:15,
+            padding:"10px 12px", outline:"none", marginBottom:14 }}/>
+
+        {/* Pipe details */}
+        <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+          color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
+          marginBottom:6 }}>Pipe / Casing</div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+          {PIPE_MATERIALS.map(m => (
+            <button key={m} onClick={() => set("pipe_material", inst.pipe_material===m?"":m)}
+              style={{ padding:"7px 13px", borderRadius:8,
+                border:`2px solid ${inst.pipe_material===m ? accentI : T.border}`,
+                background: inst.pipe_material===m ? accentI : T.surface2,
+                color: inst.pipe_material===m ? T.white : T.text,
+                fontFamily:T.sans, fontSize:13, fontWeight: inst.pipe_material===m ? 700 : 500,
+                cursor:"pointer", WebkitTapHighlightColor:"transparent" }}>
+              {m}
+            </button>
+          ))}
+        </div>
+        <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+              color:T.dim, marginBottom:4 }}>Diameter (mm)</div>
+            <input type="number" value={inst.pipe_diameter} inputMode="numeric"
+              onChange={e => set("pipe_diameter", e.target.value)}
+              placeholder="—"
+              style={{ width:"100%", background:T.surface2,
+                border:`1px solid ${T.border}`, borderRadius:7,
+                color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
+                padding:"8px", textAlign:"center", outline:"none",
+                WebkitAppearance:"none" }}/>
+          </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+              color:T.dim, marginBottom:4 }}>Total length (m)</div>
+            <input type="number" value={inst.pipe_length} step="0.01" inputMode="decimal"
+              onChange={e => set("pipe_length", e.target.value)}
+              placeholder="—"
+              style={{ width:"100%", background:T.surface2,
+                border:`1px solid ${T.border}`, borderRadius:7,
+                color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
+                padding:"8px", textAlign:"center", outline:"none",
+                WebkitAppearance:"none" }}/>
+          </div>
+          <div style={{ flex:1 }}>
+            <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+              color:T.dim, marginBottom:4 }}>Stick-up (m)</div>
+            <input type="number" value={inst.stickup} step="0.01" inputMode="decimal"
+              onChange={e => set("stickup", e.target.value)}
+              placeholder="—"
+              style={{ width:"100%", background:T.surface2,
+                border:`1px solid ${T.border}`, borderRadius:7,
+                color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
+                padding:"8px", textAlign:"center", outline:"none",
+                WebkitAppearance:"none" }}/>
+          </div>
+        </div>
+
+        {/* Depth intervals */}
+        <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+          color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
+          marginBottom:8 }}>Depths</div>
+        <div style={{ background:T.surface2, borderRadius:9,
+          border:`1px solid ${T.border}`, padding:"10px 12px", marginBottom:14 }}>
+          {[
+            ["Casing",  "casing_top",  "casing_bottom",  "Top of casing", "Bottom of casing" ],
+            ["Screen",  "screen_top",  "screen_bottom",  "Screen top",    "Screen bottom"    ],
+            ["Seal",    "seal_top",    "seal_bottom",    "Seal top",      "Seal bottom"      ],
+          ].map(([label, topF, baseF, topPH, basePH]) => (
+            <div key={label} style={{ marginBottom:10 }}>
+              <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:600,
+                color:T.dim, marginBottom:6 }}>{label}</div>
+              <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                <DepthInput label="Top (m)"  value={inst[topF]}
+                  onChange={v => set(topF, v)}  placeholder="0.00"/>
+                <div style={{ color:T.dim, fontSize:14, paddingTop:20 }}>—</div>
+                <DepthInput label="Base (m)" value={inst[baseF]}
+                  onChange={v => set(baseF, v)} placeholder="0.00"/>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Backfill layers */}
+        <div style={{ display:"flex", alignItems:"center",
+          justifyContent:"space-between", marginBottom:8 }}>
+          <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+            color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase" }}>
+            Backfill Layers
+          </div>
+          <button onClick={addLayer}
+            style={{ padding:"5px 12px", borderRadius:7,
+              background:"#8b5cf6", border:"none",
+              color:T.white, fontFamily:T.sans, fontSize:12,
+              fontWeight:700, cursor:"pointer",
+              WebkitTapHighlightColor:"transparent" }}>
+            + Add Layer
+          </button>
+        </div>
+        {inst.backfill.map((layer, li) => (
+          <BackfillLayerRow
+            key={layer.id} layer={layer} idx={li}
+            onChange={(field, val) => updateLayer(layer.id, field, val)}
+            onDelete={() => deleteLayer(layer.id)}
+            isOnly={inst.backfill.length === 1}/>
+        ))}
+
+        {/* Surface completion */}
+        <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+          color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
+          marginBottom:6, marginTop:6 }}>Surface Completion</div>
+        <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:8 }}>
+          {SURFACE_COMPLETIONS.map(s => (
+            <button key={s.v} onClick={() => set("surface", inst.surface===s.v?"":s.v)}
+              style={{ padding:"8px 13px", borderRadius:8,
+                border:`2px solid ${inst.surface===s.v ? accentI : T.border}`,
+                background: inst.surface===s.v ? accentI : T.surface2,
+                color: inst.surface===s.v ? T.white : T.text,
+                fontFamily:T.sans, fontSize:13,
+                fontWeight: inst.surface===s.v ? 700 : 500,
+                cursor:"pointer", WebkitTapHighlightColor:"transparent" }}>
+              {s.l}
+            </button>
+          ))}
+        </div>
+        {inst.surface === "other" && (
+          <input type="text" value={inst.surface_other}
+            onChange={e => set("surface_other", e.target.value)}
+            placeholder="Describe surface completion…"
+            style={{ width:"100%", background:T.surface2,
+              border:`1px solid ${T.border}`, borderRadius:8,
+              color:T.text, fontFamily:T.sans, fontSize:14,
+              padding:"10px 12px", outline:"none", marginBottom:8 }}/>
+        )}
+
+        {/* Remarks */}
+        <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+          color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
+          marginBottom:6, marginTop:8 }}>Remarks</div>
+        <textarea value={inst.remarks} rows={2}
+          onChange={e => set("remarks", e.target.value)}
+          placeholder="Installation notes, conditions, issues…"
+          style={{ width:"100%", background:T.surface2,
+            border:`1px solid ${T.border}`, borderRadius:8,
+            color:T.text, fontFamily:T.sans, fontSize:14,
+            padding:"10px 12px", outline:"none",
+            resize:"none", lineHeight:1.5 }}/>
+      </div>
+    </div>
+  );
+}
+
+// ── History card ───────────────────────────────────────────────────────
+function InstallHistoryCard({ record, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const accentI = "#10b981";
+  const date = record.created_at
+    ? new Date(record.created_at).toLocaleString("en-NZ",
+        { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })
+    : "—";
+
+  return (
+    <div style={{ background:T.surface, margin:"0 12px 8px",
+      borderRadius:10, border:`1px solid ${T.border}`,
+      boxShadow:"0 1px 2px rgba(0,0,0,0.04)", overflow:"hidden" }}>
+      {/* Header */}
+      <button onClick={() => setExpanded(e => !e)}
+        style={{ width:"100%", background:"none", border:"none",
+          padding:"11px 14px", cursor:"pointer", textAlign:"left",
+          display:"flex", alignItems:"center", gap:10,
+          WebkitTapHighlightColor:"transparent" }}>
+        <div style={{ flex:1 }}>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:3 }}>
+            {record.instruments?.map((inst, i) => {
+              const t = INSTALL_TYPES.find(x => x.v === inst.inst_type);
+              return (
+                <span key={i} style={{ background:accentI+"20",
+                  border:`1px solid ${accentI+"40"}`,
+                  borderRadius:5, padding:"2px 8px",
+                  fontFamily:T.sans, fontSize:11, fontWeight:700,
+                  color:accentI }}>
+                  {t?.abbr || "?"}{inst.ref_id ? ` ${inst.ref_id}` : ""}
+                </span>
+              );
+            })}
+          </div>
+          <div style={{ fontFamily:T.sans, fontSize:12, color:T.dim }}>{date}</div>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <span style={{ fontFamily:T.sans, fontSize:11, color:T.dim }}>
+            {expanded ? "▲" : "▼"}
+          </span>
+          <button onClick={e => { e.stopPropagation(); onDelete(record.id); }}
+            style={{ background:"none", border:"none", color:T.dim,
+              fontSize:20, cursor:"pointer", padding:"0 2px", lineHeight:1 }}>×</button>
+        </div>
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && record.instruments?.map((inst, i) => {
+        const t = INSTALL_TYPES.find(x => x.v === inst.inst_type);
+        const surf = SURFACE_COMPLETIONS.find(s => s.v === inst.surface);
+        return (
+          <div key={i} style={{ borderTop:`1px solid ${T.border}`,
+            padding:"10px 14px" }}>
+            <div style={{ fontFamily:T.sans, fontSize:13, fontWeight:700,
+              color:accentI, marginBottom:6 }}>
+              {t?.l || inst.inst_type}{inst.ref_id ? ` — ${inst.ref_id}` : ""}
+            </div>
+            {/* Pipe */}
+            {(inst.pipe_material||inst.pipe_diameter||inst.pipe_length) && (
+              <div style={{ fontFamily:T.sans, fontSize:12, color:T.dim,
+                marginBottom:4 }}>
+                Pipe: {[inst.pipe_material, inst.pipe_diameter ? inst.pipe_diameter+"mm dia" : null,
+                  inst.pipe_length ? inst.pipe_length+"m length" : null,
+                  inst.stickup ? inst.stickup+"m stickup" : null
+                ].filter(Boolean).join(" · ")}
+              </div>
+            )}
+            {/* Depths */}
+            {[["Casing","casing_top","casing_bottom"],
+              ["Screen","screen_top","screen_bottom"],
+              ["Seal","seal_top","seal_bottom"]].map(([lbl,tf,bf]) =>
+              inst[tf] || inst[bf] ? (
+                <div key={lbl} style={{ fontFamily:T.sans, fontSize:12,
+                  color:T.dim, marginBottom:2 }}>
+                  {lbl}: {inst[tf]||"?"}–{inst[bf]||"?"}m
+                </div>
+              ) : null
+            )}
+            {/* Backfill summary */}
+            {inst.backfill?.filter(l => l.material).map((l,li) => {
+              const m = BACKFILL_MATERIALS.find(x => x.v === l.material);
+              return (
+                <div key={li} style={{ fontFamily:T.sans, fontSize:12,
+                  color:T.dim, marginBottom:2 }}>
+                  ↳ {m?.l || l.material}{l.top||l.base ? ` (${l.top||"?"}–${l.base||"?"}m)` : ""}
+                  {l.qty ? ` · ${l.qty} ${l.unit}` : ""}
+                </div>
+              );
+            })}
+            {/* Surface */}
+            {surf && <div style={{ fontFamily:T.sans, fontSize:12,
+              color:T.dim, marginTop:4 }}>
+              Surface: {surf.l}{inst.surface_other ? ` — ${inst.surface_other}` : ""}
+            </div>}
+            {inst.remarks?.trim() && (
+              <div style={{ fontFamily:T.sans, fontSize:12, color:T.dim,
+                marginTop:4, fontStyle:"italic" }}>{inst.remarks}</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Main module ────────────────────────────────────────────────────────
+function InstallationsModule({ activeJob, onGoToJobs, showToast }) {
+  if (!activeJob) return <NoJobGuard moduleName="Installations" onGoToJobs={onGoToJobs}/>;
+
+  const [tab,          setTab]          = useState("entry");
+  const [instruments,  setInstruments]  = useState([newInstrument()]);
+  const [records,      setRecords]      = useState([]);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const formScrollRef = useRef(null);
+
+  const jobKey = `${activeJob.PROJ_ID}_${activeJob.POINT_ID}`;
+  const accentI = "#10b981";
+
+  const loadRecords = useCallback(async () => {
+    const all = await dbGetAll("notes");
+    const filtered = all.filter(r => r.job_key === jobKey && r.type === "installation");
+    filtered.sort((a,b) => (b.created_at||"").localeCompare(a.created_at||""));
+    setRecords(filtered);
+  }, [jobKey]);
+
+  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { setInstruments([newInstrument()]); setTab("entry"); }, [jobKey]);
+
+  const updateInstrument = (id, updated) =>
+    setInstruments(prev => prev.map(i => i.id === id ? updated : i));
+
+  const addInstrument = () =>
+    setInstruments(prev => [...prev, newInstrument()]);
+
+  const removeInstrument = (id) =>
+    setInstruments(prev => prev.filter(i => i.id !== id));
+
+  const handleSave = async () => {
+    const hasType = instruments.every(i => i.inst_type);
+    if (!hasType) { showToast("Select instrument type for all entries"); return; }
+
+    const record = {
+      id:          `install_${Date.now()}`,
+      job_key:     jobKey,
+      PROJ_ID:     activeJob.PROJ_ID,
+      POINT_ID:    activeJob.POINT_ID,
+      type:        "installation",
+      instruments: instruments.map(inst => ({ ...inst })),
+      created_at:  new Date().toISOString(),
+      sync_status: "pending",
+    };
+
+    await dbPut("notes", record);
+    await loadRecords();
+    setInstruments([newInstrument()]);
+    if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
+    showToast("Installation saved ✓");
+  };
+
+  const handleDelete = async (id) => {
+    await dbDelete("notes", id);
+    await loadRecords();
+  };
+
+  const handleClearAll = async () => {
+    setConfirmClear(false);
+    await Promise.all(records.map(r => dbDelete("notes", r.id)));
+    await loadRecords();
+    showToast("Cleared");
+  };
+
+  const handleExport = () => {
+    if (!records.length) { showToast("No records to export"); return; }
+    const blob = new Blob([JSON.stringify(records, null, 2)], { type:"application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url;
+    a.download = `install_${activeJob.PROJ_ID}_${activeJob.POINT_ID}_${new Date().toISOString().slice(0,10)}.json`;
+    a.click(); URL.revokeObjectURL(url);
+    showToast("Exported");
+  };
+
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+
+      {/* Tabs */}
+      <div style={{ background:T.white, borderBottom:`1px solid ${T.border}`, flexShrink:0 }}>
+        <div style={{ display:"flex", alignItems:"center", padding:"0 12px" }}>
+          {[["entry","Entry"],["history",`Log (${records.length})`]].map(([id,label]) => {
+            const active = tab===id;
+            return (
+              <button key={id} onClick={() => { setTab(id); setConfirmClear(false); }}
+                style={{ flex:1, padding:"11px 0", background:"transparent", border:"none",
+                  fontFamily:T.sans, fontSize:14, fontWeight:active?700:500,
+                  color:active?T.text:T.dim, cursor:"pointer",
+                  borderTop:`3px solid ${active?accentI:"transparent"}`,
+                  transition:"all 0.15s", WebkitTapHighlightColor:"transparent" }}>
+                {label}
+              </button>
+            );
+          })}
+          {tab==="history" && records.length > 0 && (
+            <div style={{ marginLeft:"auto", display:"flex", gap:6, paddingBottom:2 }}>
+              <button onClick={handleExport}
+                style={{ padding:"6px 12px", borderRadius:7, background:accentI,
+                  color:T.white, border:"none", fontFamily:T.sans,
+                  fontSize:12, fontWeight:700, cursor:"pointer" }}>↓ JSON</button>
+              {confirmClear ? (
+                <div style={{ display:"flex", gap:5, alignItems:"center" }}>
+                  <span style={{ fontFamily:T.sans, fontSize:12, color:T.red, fontWeight:600 }}>Sure?</span>
+                  <button onClick={handleClearAll} style={{ padding:"5px 10px", borderRadius:7,
+                    background:T.red, border:"none", fontFamily:T.sans, fontSize:12,
+                    fontWeight:700, color:T.white, cursor:"pointer" }}>Yes</button>
+                  <button onClick={() => setConfirmClear(false)} style={{ padding:"5px 10px",
+                    borderRadius:7, background:"transparent",
+                    border:`1.5px solid ${T.border2}`, fontFamily:T.sans,
+                    fontSize:12, color:T.dim, cursor:"pointer" }}>No</button>
+                </div>
+              ) : (
+                <button onClick={() => setConfirmClear(true)}
+                  style={{ padding:"6px 12px", borderRadius:7, background:"transparent",
+                    border:`1.5px solid ${T.red}`, fontFamily:T.sans,
+                    fontSize:12, fontWeight:600, color:T.red, cursor:"pointer" }}>
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Entry tab */}
+      {tab==="entry" && (
+        <div ref={formScrollRef} style={{ flex:1, overflowY:"auto", paddingBottom:24 }}>
+
+          <div style={{ padding:"10px 12px 0",
+            display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <div style={{ fontFamily:T.sans, fontSize:12, color:T.dim }}>
+              {instruments.length} instrument{instruments.length!==1?"s":""} in this record
+            </div>
+            <button onClick={addInstrument}
+              style={{ padding:"7px 14px", borderRadius:8,
+                background:accentI, border:"none",
+                color:T.white, fontFamily:T.sans,
+                fontSize:13, fontWeight:700, cursor:"pointer",
+                WebkitTapHighlightColor:"transparent" }}>
+              + Add Instrument
+            </button>
+          </div>
+
+          {instruments.map((inst, idx) => (
+            <InstrumentForm
+              key={inst.id} inst={inst} idx={idx}
+              onChange={updated => updateInstrument(inst.id, updated)}
+              onDelete={() => removeInstrument(inst.id)}
+              isOnly={instruments.length === 1}/>
+          ))}
+
+          <div style={{ padding:"0 12px" }}>
+            <Btn onClick={handleSave} color={accentI} style={{ width:"100%" }}>
+              Save Installation Record
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Log tab */}
+      {tab==="history" && (
+        <div style={{ flex:1, overflowY:"auto", padding:"8px 0 24px" }}>
+          {records.length === 0 ? (
+            <div style={{ textAlign:"center", padding:"48px 24px",
+              fontFamily:T.sans, fontSize:15, color:T.dim, lineHeight:1.8 }}>
+              No installation records for {activeJob.POINT_ID} yet.
+            </div>
+          ) : records.map(r => (
+            <InstallHistoryCard key={r.id} record={r} onDelete={handleDelete}/>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ─── PLACEHOLDER MODULE ──────────────────────────────────────────────
 
 function PlaceholderModule({ name, icon, color, activeJob, onGoToJobs }) {
@@ -3400,6 +4078,8 @@ function App() {
         return <PhotosModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
       case "notes":
         return <ConsumablesModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
+      case "install":
+        return <InstallationsModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
       default: return null;
     }
   };
