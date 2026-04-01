@@ -65,6 +65,9 @@ const MODULES = [
   { id:"notes",  label:"Cons.",  icon:"package",   color: "#f59e0b"},
   { id:"install",label:"Install",icon:"tool",      color: "#10b981"},
 ];
+const DEFAULT_API_BASE = window.location.protocol.startsWith("http")
+  ? `${window.location.origin}/api`
+  : "";
 
 function ModuleIcon({ name, size=20, color="currentColor", strokeWidth=2 }) {
   const icons = {
@@ -220,6 +223,128 @@ function uuid() {
   });
 }
 
+async function getApiBase() {
+  try {
+    const stored = await dbGet("active_job", "api_base");
+    return stored?.value || DEFAULT_API_BASE;
+  } catch (err) {
+    return DEFAULT_API_BASE;
+  }
+}
+
+async function apiJson(path, options={}) {
+  const base = await getApiBase();
+  if (!base) throw new Error("API not configured");
+  const headers = {
+    ...(options.body ? { "Content-Type":"application/json" } : {}),
+    ...(options.headers || {}),
+  };
+  const res = await fetch(`${base}${path}`, {
+    ...options,
+    headers,
+    signal: options.signal || AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`Server error ${res.status}`);
+  return res.json();
+}
+
+function getRecordTypeForStore(store, record) {
+  if (store === "notes") return record.type || "note";
+  return store;
+}
+
+function getStoreForRecordType(recordType) {
+  if (recordType === "consumable" || recordType === "installation") return "notes";
+  return recordType;
+}
+
+async function syncPendingPoints() {
+  const all = await dbGetAll("jobs_cache");
+  const pending = all.filter(item =>
+    item.type === "borehole" && (item.is_new || item.sync_status === "pending")
+  );
+  if (!pending.length) return 0;
+
+  await apiJson("/sync/points", {
+    method:"POST",
+    body: JSON.stringify({
+      points: pending.map(point => ({
+        PROJ_ID: point.PROJ_ID,
+        POINT_ID: point.POINT_ID,
+        Type: point.Type || null,
+        HoleDepth: point.HoleDepth ?? null,
+        Location: point.Location || "",
+      })),
+    }),
+  });
+
+  await Promise.all(pending.map(point =>
+    dbPut("jobs_cache", { ...point, is_new:false, sync_status:"synced" })
+  ));
+
+  const active = await dbGet("active_job", "active");
+  if (active && pending.some(point => point.PROJ_ID === active.PROJ_ID && point.POINT_ID === active.POINT_ID)) {
+    await dbPut("active_job", { ...active, is_new:false, sync_status:"synced" });
+  }
+
+  return pending.length;
+}
+
+async function syncPendingRecords() {
+  const stores = ["geology","spt","core","photos","notes"];
+  let pushed = 0;
+
+  for (const store of stores) {
+    const all = await dbGetAll(store);
+    const pending = all.filter(record => record.sync_status === "pending");
+    if (!pending.length) continue;
+
+    await apiJson("/sync/records", {
+      method:"POST",
+      body: JSON.stringify({
+        records: pending.map(record => ({
+          record_type: getRecordTypeForStore(store, record),
+          record,
+        })),
+      }),
+    });
+
+    await Promise.all(pending.map(record =>
+      dbPut(store, { ...record, sync_status:"synced" })
+    ));
+    pushed += pending.length;
+  }
+
+  return pushed;
+}
+
+async function hydrateRemoteRecords(activeJob) {
+  if (!activeJob?.PROJ_ID || !activeJob?.POINT_ID) return 0;
+
+  const payload = await apiJson(
+    `/sync/records?proj_id=${encodeURIComponent(activeJob.PROJ_ID)}&point_id=${encodeURIComponent(activeJob.POINT_ID)}`
+  );
+  const records = payload.records || [];
+  if (!records.length) return 0;
+
+  await Promise.all(records.map(item => {
+    const store = getStoreForRecordType(item.record_type);
+    return dbPut(store, { ...item.record, sync_status:"synced" });
+  }));
+
+  return records.length;
+}
+
+async function syncActiveJobData(activeJob) {
+  const pushedPoints = await syncPendingPoints();
+  const pushedRecords = await syncPendingRecords();
+  const pulledRecords = activeJob ? await hydrateRemoteRecords(activeJob) : 0;
+  return {
+    pushed: pushedPoints + pushedRecords,
+    pulled: pulledRecords,
+  };
+}
+
 // ─── SHARED UI ATOMS ──────────────────────────────────────────────────
 
 function Card({ children, style }) {
@@ -331,7 +456,7 @@ function NoJobGuard({ moduleName, onGoToJobs }) {
 
 const BOREHOLE_TYPES = ["BH","CPT","TP","WS","SCPT","DMT","PLT","OTHER"];
 
-function JobsModule({ activeJob, setActiveJob, showToast }) {
+function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }) {
   const [view,        setView]        = useState("home"); // home | select_project | select_borehole | new_borehole
   const [projects,    setProjects]    = useState([]);
   const [search,      setSearch]      = useState("");
@@ -339,7 +464,7 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
   const [boreholes,   setBoreholes]   = useState([]);
   const [bhSearch,    setBhSearch]    = useState("");
   const [syncing,     setSyncing]     = useState(false);
-  const [apiBase,     setApiBase]     = useState("");
+  const [apiBase,     setApiBase]     = useState(DEFAULT_API_BASE);
   const [showApiEdit, setShowApiEdit] = useState(false);
   const [newBH,       setNewBH]       = useState({
     POINT_ID:"", Type:"BH", HoleDepth:"", Location:"", Remarks:""
@@ -352,9 +477,11 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
       setProjects(proj);
     });
     dbGet("active_job","api_base").then(r => {
-      if (r) setApiBase(r.value);
+      if (r?.value) setApiBase(r.value);
     });
   }, []);
+
+  const effectiveApiBase = apiBase || DEFAULT_API_BASE;
 
   const saveApiBase = async (val) => {
     setApiBase(val);
@@ -363,10 +490,10 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
 
   // Fetch projects from API
   const fetchProjects = async () => {
-    if (!apiBase) { showToast("Enter API address first"); setShowApiEdit(true); return; }
+    if (!effectiveApiBase) { showToast("Enter API address first"); setShowApiEdit(true); return; }
     setSyncing(true);
     try {
-      const res = await fetch(`${apiBase}/projects`, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(`${effectiveApiBase}/projects`, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
       const cachedProjects = data.map(p => ({ ...p, id:`proj_${p.PROJ_ID}`, type:"project" }));
@@ -383,8 +510,8 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
   const fetchBoreholes = async (projId) => {
     setSyncing(true);
     try {
-      if (apiBase) {
-        const res = await fetch(`${apiBase}/points?proj_id=${projId}`, { signal: AbortSignal.timeout(8000) });
+      if (effectiveApiBase) {
+        const res = await fetch(`${effectiveApiBase}/points?proj_id=${projId}`, { signal: AbortSignal.timeout(8000) });
         if (!res.ok) throw new Error();
         const data = await res.json();
         const allCached = await dbGetAll("jobs_cache");
@@ -532,9 +659,17 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
                   day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit"
                 })}
               </div>
+              <div style={{ fontFamily:T.sans, fontSize:11, color:T.dim, marginBottom:10 }}>
+                Cloud sync: {syncState?.syncing ? "Syncing..." :
+                  syncState?.lastSyncAt ? `Last sync ${new Date(syncState.lastSyncAt).toLocaleString("en-NZ", {
+                    day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit"
+                  })}` : "Not synced yet"}
+              </div>
               <div style={{ display:"flex", gap:8 }}>
                 <Btn onClick={() => setView("select_project")} color={T.accent} small
                   style={{ flex:1 }}>Change Job</Btn>
+                <Btn onClick={onSyncNow} outline color={T.blue} small
+                  disabled={syncState?.syncing}>Sync</Btn>
                 <Btn onClick={clearJob} outline color={T.red} small>Clear</Btn>
               </div>
             </CardSection>
@@ -583,7 +718,7 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
                   API address
                 </div>
                 <div style={{ fontFamily:T.sans, fontSize:13, color: apiBase ? T.text : T.dim }}>
-                  {apiBase || "Not configured"}
+                    {effectiveApiBase || "Not configured"}
                 </div>
               </div>
               <Btn onClick={() => setShowApiEdit(true)} outline color={T.accent} small>Edit</Btn>
@@ -1445,7 +1580,7 @@ const GEO_ROCK_INIT = {
   rockname:null, rockname_custom:"", rockstrength:null, r_remarks:"",
 };
 
-function GeoModule({ activeJob, showToast }) {
+function GeoModule({ activeJob, showToast, syncTick }) {
   const [geoTab,     setGeoTab]     = useState("entry");
   const [geoMode,    setGeoMode]    = useState("soil");
   const [soilState,  setSoilState]  = useState(GEO_SOIL_INIT);
@@ -1471,7 +1606,7 @@ function GeoModule({ activeJob, showToast }) {
     setRecords(filtered);
   }, [activeJob]);
 
-  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { loadRecords(); }, [loadRecords, syncTick]);
 
   const handleSave = async () => {
     if (!desc) { showToast("Select material first"); return; }
@@ -1958,7 +2093,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
   );
 }
 
-function SPTModule({ activeJob, showToast }) {
+function SPTModule({ activeJob, showToast, syncTick }) {
   const [sptTab,    setSptTab]    = useState("setup");
   const [topDepth,  setTopDepth]  = useState("1.50");
   const [testState, setTestState] = useState({ top:"1.50", blows:[], penetration:[],
@@ -1973,7 +2108,7 @@ function SPTModule({ activeJob, showToast }) {
       .sort((a,b)=>parseFloat(a.top||0)-parseFloat(b.top||0)));
   }, [activeJob]);
 
-  useEffect(()=>{ loadRecords(); },[loadRecords]);
+  useEffect(()=>{ loadRecords(); },[loadRecords, syncTick]);
 
   const startTest = () => {
     setTestState({ top:topDepth, blows:[], penetration:[],
@@ -2134,7 +2269,7 @@ function tcrColor(pct) {
   return T.red;
 }
 
-function CoreModule({ activeJob, onGoToJobs, showToast }) {
+function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   if (!activeJob) return <NoJobGuard moduleName="Core" onGoToJobs={onGoToJobs}/>;
 
   const [tab,          setTab]          = useState("entry");
@@ -2152,7 +2287,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast }) {
     setRecords(filtered);
   }, [jobKey]);
 
-  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { loadRecords(); }, [loadRecords, syncTick]);
   useEffect(() => { setForm(CORE_INIT); setTab("entry"); }, [jobKey]);
 
   const set = useCallback((field, value) =>
@@ -2753,7 +2888,7 @@ function PhotoThumbnail({ record, onDelete }) {
   );
 }
 
-function PhotosModule({ activeJob, onGoToJobs, showToast }) {
+function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   if (!activeJob) return <NoJobGuard moduleName="Photos" onGoToJobs={onGoToJobs}/>;
 
   const [activeCategory, setActiveCategory] = useState(null);
@@ -2773,7 +2908,7 @@ function PhotosModule({ activeJob, onGoToJobs, showToast }) {
     setRecords(filtered);
   }, [jobKey]);
 
-  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { loadRecords(); }, [loadRecords, syncTick]);
   useEffect(() => { setActiveCategory(null); setBoxNumber("1"); }, [jobKey]);
 
   const handleFiles = async (files) => {
@@ -3045,7 +3180,7 @@ const CONSUMABLE_CATEGORIES = [
 
 const CONS_INIT = { category:"", item:"", item_custom:"", qty:"", unit:"each", remarks:"" };
 
-function ConsumablesModule({ activeJob, onGoToJobs, showToast }) {
+function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   if (!activeJob) return <NoJobGuard moduleName="Consumables" onGoToJobs={onGoToJobs}/>;
 
   const [tab,          setTab]          = useState("entry");
@@ -3062,7 +3197,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast }) {
     setRecords(filtered);
   }, [jobKey]);
 
-  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { loadRecords(); }, [loadRecords, syncTick]);
   useEffect(() => { setForm(CONS_INIT); setTab("entry"); }, [jobKey]);
 
   const set = (f,v) => setForm(p => ({...p, [f]:v}));
@@ -3868,7 +4003,7 @@ function InstallHistoryCard({ record, onDelete }) {
 }
 
 // ── Main module ────────────────────────────────────────────────────────
-function InstallationsModule({ activeJob, onGoToJobs, showToast }) {
+function InstallationsModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   if (!activeJob) return <NoJobGuard moduleName="Installations" onGoToJobs={onGoToJobs}/>;
 
   const [tab,          setTab]          = useState("entry");
@@ -3887,7 +4022,7 @@ function InstallationsModule({ activeJob, onGoToJobs, showToast }) {
     setRecords(filtered);
   }, [jobKey]);
 
-  useEffect(() => { loadRecords(); }, [loadRecords]);
+  useEffect(() => { loadRecords(); }, [loadRecords, syncTick]);
   useEffect(() => { setInstruments([newInstrument()]); setTab("entry"); }, [jobKey]);
 
   const updateInstrument = (id, updated) =>
@@ -4071,7 +4206,10 @@ function App() {
   const [activeModule, setActiveModule] = useState("jobs");
   const [activeJob,    setActiveJob]    = useState(null);
   const [toast,        setToast]        = useState({ msg:"", visible:false });
+  const [syncTick,     setSyncTick]     = useState(0);
+  const [syncState,    setSyncState]    = useState({ syncing:false, lastSyncAt:null });
   const toastTimer = useRef(null);
+  const syncLock = useRef(false);
 
   // Load active job and seed sample data on mount
   useEffect(() => {
@@ -4088,6 +4226,43 @@ function App() {
       setToast(t => ({ ...t, visible:false })), 2500);
   }, []);
 
+  const runSync = useCallback(async ({ silent=false } = {}) => {
+    if (syncLock.current) return;
+    syncLock.current = true;
+    setSyncState(prev => ({ ...prev, syncing:true }));
+    try {
+      const result = await syncActiveJobData(activeJob);
+      if (result.pushed || result.pulled) {
+        setSyncTick(t => t + 1);
+        setSyncState({ syncing:false, lastSyncAt:Date.now() });
+        if (!silent) showToast(`Synced ${result.pushed + result.pulled} item${result.pushed + result.pulled !== 1 ? "s" : ""}`);
+      } else {
+        setSyncState(prev => ({ syncing:false, lastSyncAt:prev.lastSyncAt || Date.now() }));
+      }
+    } catch (err) {
+      setSyncState(prev => ({ ...prev, syncing:false }));
+      if (!silent) showToast("Sync unavailable");
+    } finally {
+      syncLock.current = false;
+    }
+  }, [activeJob, showToast]);
+
+  useEffect(() => {
+    runSync({ silent:true });
+  }, []);
+
+  useEffect(() => {
+    if (!activeJob) return;
+    runSync({ silent:true });
+    const timer = setInterval(() => runSync({ silent:true }), 30000);
+    const onOnline = () => runSync({ silent:false });
+    window.addEventListener("online", onOnline);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [activeJob, runSync]);
+
   const handleSetActiveJob = useCallback((job) => {
     setActiveJob(job);
     if (job) setActiveModule("geo"); // jump to geo after selecting job
@@ -4103,17 +4278,19 @@ function App() {
         return <JobsModule
           activeJob={activeJob}
           setActiveJob={handleSetActiveJob}
-          showToast={showToast} />;
-      case "geo": return <GeoModule activeJob={activeJob} showToast={showToast}/>;
-      case "spt": return <SPTModule activeJob={activeJob} showToast={showToast}/>;
+          showToast={showToast}
+          syncState={syncState}
+          onSyncNow={() => runSync({ silent:false })} />;
+      case "geo": return <GeoModule activeJob={activeJob} showToast={showToast} syncTick={syncTick}/>;
+      case "spt": return <SPTModule activeJob={activeJob} showToast={showToast} syncTick={syncTick}/>;
       case "core":
-        return <CoreModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
+        return <CoreModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast} syncTick={syncTick}/>;
       case "photos":
-        return <PhotosModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
+        return <PhotosModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast} syncTick={syncTick}/>;
       case "notes":
-        return <ConsumablesModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
+        return <ConsumablesModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast} syncTick={syncTick}/>;
       case "install":
-        return <InstallationsModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast}/>;
+        return <InstallationsModule activeJob={activeJob} onGoToJobs={goToJobs} showToast={showToast} syncTick={syncTick}/>;
       default: return null;
     }
   };

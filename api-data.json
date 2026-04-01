@@ -1,0 +1,61 @@
+{
+  "projects": [
+    { "PROJ_ID": "2024-041", "PROJ_NAME": "Wigram Residential Development", "Location": "Wigram, Christchurch", "Client": "Propertyco Ltd", "Engineer": "S. Templeton" },
+    { "PROJ_ID": "2024-058", "PROJ_NAME": "Bealey Ave Retaining Wall", "Location": "Bealey Ave, Christchurch Central", "Client": "Christchurch City Council", "Engineer": "A. Williams" },
+    { "PROJ_ID": "2024-063", "PROJ_NAME": "Belfast Industrial Subdivision", "Location": "Belfast, Christchurch", "Client": "Northland Developments", "Engineer": "S. Templeton" },
+    { "PROJ_ID": "2024-071", "PROJ_NAME": "Lyttelton Port Wharf Strengthening", "Location": "Lyttelton Harbour", "Client": "Lyttelton Port Company", "Engineer": "M. Chen" },
+    { "PROJ_ID": "2025-003", "PROJ_NAME": "Kaikoura SH1 Slope Stability", "Location": "State Highway 1, Kaikoura Coast", "Client": "NZTA", "Engineer": "D. Burns" },
+    { "PROJ_ID": "2025-011", "PROJ_NAME": "Rolleston Industrial Park Stage 3", "Location": "Rolleston, Selwyn District", "Client": "Selwyn Commercial Trust", "Engineer": "S. Templeton" },
+    { "PROJ_ID": "2025-019", "PROJ_NAME": "Rangiora Town Centre Redevelopment", "Location": "Rangiora, Waimakariri", "Client": "Waimakariri District Council", "Engineer": "A. Williams" },
+    { "PROJ_ID": "2025-027", "PROJ_NAME": "Halswell Quarry Park Infrastructure", "Location": "Halswell, Christchurch", "Client": "CCC Parks", "Engineer": "M. Chen" }
+  ],
+  "points": {
+    "2024-041": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 12.0, "Location": "NW corner of site, 3m from boundary fence" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 15.0, "Location": "Central building footprint, grid A3" },
+      { "POINT_ID": "BH03", "Type": "BH", "HoleDepth": 10.0, "Location": "SE corner near stormwater reserve" },
+      { "POINT_ID": "TP01", "Type": "TP", "HoleDepth": 3.5, "Location": "Driveway area, western access" },
+      { "POINT_ID": "TP02", "Type": "TP", "HoleDepth": 3.0, "Location": "Rear section, proposed retaining wall" }
+    ],
+    "2024-058": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 8.0, "Location": "Top of bank, 2m east of kerb" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 8.0, "Location": "Mid-slope, existing retaining wall" },
+      { "POINT_ID": "BH03", "Type": "BH", "HoleDepth": 10.0, "Location": "Toe of bank, footpath edge" }
+    ],
+    "2024-063": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 20.0, "Location": "Lot 12 - heavy industrial zone" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 20.0, "Location": "Lot 7 - light industrial zone" },
+      { "POINT_ID": "BH03", "Type": "BH", "HoleDepth": 15.0, "Location": "Road reserve, proposed main entrance" },
+      { "POINT_ID": "CPT01", "Type": "CPT", "HoleDepth": 18.0, "Location": "Central area, proposed building A" },
+      { "POINT_ID": "CPT02", "Type": "CPT", "HoleDepth": 18.0, "Location": "Western area, proposed building B" },
+      { "POINT_ID": "CPT03", "Type": "CPT", "HoleDepth": 18.0, "Location": "Eastern area, proposed car park" }
+    ],
+    "2024-071": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 30.0, "Location": "Wharf pile cap, Berth 5 north" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 30.0, "Location": "Wharf pile cap, Berth 5 south" },
+      { "POINT_ID": "BH03", "Type": "BH", "HoleDepth": 25.0, "Location": "Reclamation zone, eastern edge" }
+    ],
+    "2025-003": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 15.0, "Location": "Crest of failed slope, Chainage 14+200" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 12.0, "Location": "Mid-slope, Chainage 14+200" },
+      { "POINT_ID": "BH03", "Type": "BH", "HoleDepth": 15.0, "Location": "Toe of slope, Chainage 14+200" },
+      { "POINT_ID": "BH04", "Type": "BH", "HoleDepth": 12.0, "Location": "Crest of slope, Chainage 14+650" }
+    ],
+    "2025-011": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 15.0, "Location": "Stage 3 northern boundary" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 15.0, "Location": "Stage 3 central" },
+      { "POINT_ID": "BH03", "Type": "BH", "HoleDepth": 15.0, "Location": "Stage 3 southern boundary" },
+      { "POINT_ID": "TP01", "Type": "TP", "HoleDepth": 3.0, "Location": "Existing fill, NW area" },
+      { "POINT_ID": "TP02", "Type": "TP", "HoleDepth": 3.0, "Location": "Existing fill, SE area" }
+    ],
+    "2025-019": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 12.0, "Location": "Proposed library site, Southbrook Rd" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 12.0, "Location": "Proposed carpark, High St" },
+      { "POINT_ID": "TP01", "Type": "TP", "HoleDepth": 2.5, "Location": "Footpath upgrade, north" }
+    ],
+    "2025-027": [
+      { "POINT_ID": "BH01", "Type": "BH", "HoleDepth": 8.0, "Location": "Proposed amenities building" },
+      { "POINT_ID": "BH02", "Type": "BH", "HoleDepth": 6.0, "Location": "Proposed carpark extension" }
+    ]
+  }
+}
