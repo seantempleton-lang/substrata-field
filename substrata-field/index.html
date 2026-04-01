@@ -9,20 +9,18 @@
 <meta name="theme-color" content="#13151a">
 <title>SubStrata-Field</title>
 <link rel="manifest" href="manifest.json">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
-body { background: #13151a; font-family: 'DM Sans', sans-serif; }
+body { background: #13151a; font-family: "Segoe UI", "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
 #root { height: 100%; }
 </style>
 </head>
 <body>
 <div id="root"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="./vendor/react.production.min.js"></script>
+<script src="./vendor/react-dom.production.min.js"></script>
+<script src="./vendor/babel.min.js"></script>
 <script type="text/babel">
 const { useState, useCallback, useEffect, useRef } = React;
 
@@ -53,7 +51,7 @@ const T = {
   white:    "#ffffff",
   shadow:   "0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)",
   shadow2:  "0 4px 12px rgba(0,0,0,0.08)",
-  sans:     "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif",
+  sans:     '"Segoe UI", "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif',
   mono:     "'SF Mono','Fira Mono','Courier New',monospace",
 };
 
@@ -113,6 +111,28 @@ const dbPut    = (store,rec) => openDB().then(d => new Promise((res,rej) => { co
 const dbGetAll = (store)     => openDB().then(d => new Promise((res,rej) => { const r=d.transaction(store,"readonly").objectStore(store).getAll(); r.onsuccess=e=>res(e.target.result); r.onerror=e=>rej(e.target.error); }));
 const dbDelete = (store,id)  => openDB().then(d => new Promise((res,rej) => { const tx=d.transaction(store,"readwrite"); tx.objectStore(store).delete(id); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); }));
 const dbClear  = (store)     => openDB().then(d => new Promise((res,rej) => { const tx=d.transaction(store,"readwrite"); tx.objectStore(store).clear(); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); }));
+
+async function replaceCachedProjects(projects) {
+  const existing = await dbGetAll("jobs_cache");
+  const staleProjects = existing.filter(item => item.type === "project");
+  await Promise.all(staleProjects.map(item => dbDelete("jobs_cache", item.id)));
+  await Promise.all(projects.map(project =>
+    dbPut("jobs_cache", { ...project, id:`proj_${project.PROJ_ID}`, type:"project" })
+  ));
+}
+
+function mergeBoreholes(serverBoreholes, cachedBoreholes, projId) {
+  const byId = new Map(serverBoreholes.map(item => [item.id, item]));
+  cachedBoreholes
+    .filter(item =>
+      item.type === "borehole" &&
+      item.PROJ_ID === projId &&
+      (item.is_new || item.sync_status === "pending") &&
+      !byId.has(item.id)
+    )
+    .forEach(item => byId.set(item.id, item));
+  return Array.from(byId.values());
+}
 
 // ─── SAMPLE DATA ─────────────────────────────────────────────────────
 const SAMPLE_PROJECTS = [
@@ -349,10 +369,9 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
       const res = await fetch(`${apiBase}/projects`, { signal: AbortSignal.timeout(8000) });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
-      // Cache to IndexedDB
-      await dbClear("jobs_cache");
-      await Promise.all(data.map(p => dbPut("jobs_cache", { ...p, id:`proj_${p.PROJ_ID}`, type:"project" })));
-      setProjects(data.map(p => ({ ...p, id:`proj_${p.PROJ_ID}`, type:"project" })));
+      const cachedProjects = data.map(p => ({ ...p, id:`proj_${p.PROJ_ID}`, type:"project" }));
+      await replaceCachedProjects(data);
+      setProjects(cachedProjects);
       showToast(`${data.length} projects loaded`);
     } catch(e) {
       showToast("Could not reach server");
@@ -368,12 +387,13 @@ function JobsModule({ activeJob, setActiveJob, showToast }) {
         const res = await fetch(`${apiBase}/points?proj_id=${projId}`, { signal: AbortSignal.timeout(8000) });
         if (!res.ok) throw new Error();
         const data = await res.json();
+        const allCached = await dbGetAll("jobs_cache");
         // Cache under project
         const cached = data.map(b => ({
           ...b, id:`bh_${projId}_${b.POINT_ID}`, type:"borehole", PROJ_ID: projId
         }));
         await Promise.all(cached.map(b => dbPut("jobs_cache", b)));
-        setBoreholes(cached);
+        setBoreholes(mergeBoreholes(cached, allCached, projId));
       } else {
         // Load from cache only
         const all = await dbGetAll("jobs_cache");
@@ -1458,18 +1478,32 @@ function GeoModule({ activeJob, showToast }) {
     const s       = geoMode==="soil" ? soilState : rockState;
     const topVal  = geoMode==="soil" ? s.top   : s.r_top;
     const baseVal = geoMode==="soil" ? s.base  : s.r_base;
+    if (topVal === "" || topVal === null || topVal === undefined) {
+      showToast("Enter a top depth first");
+      return;
+    }
     if (!baseVal) { showToast("Enter a base depth first"); return; }
+    const topNum = parseFloat(topVal);
+    const baseNum = parseFloat(baseVal);
+    if (!Number.isFinite(topNum) || !Number.isFinite(baseNum)) {
+      showToast("Depths must be valid numbers");
+      return;
+    }
+    if (baseNum <= topNum) {
+      showToast("Base must be > Top");
+      return;
+    }
     const record = {
       id: `geo_${Date.now()}`, GEO_ID: uuid(),
       PROJ_ID: activeJob.PROJ_ID, POINT_ID: activeJob.POINT_ID,
       mode: geoMode, description: desc,
-      top: topVal, base: baseVal,
+      top: topNum, base: baseNum,
       material: geoMode==="soil" ? soilState.major||"" : rockState.rockname||rockState.rockname_custom||"",
       created_at: new Date().toISOString(), sync_status:"pending",
       snapshot: JSON.stringify(geoMode==="soil" ? soilState : rockState),
     };
     await dbPut("geology", record);
-    const nextTop = parseFloat(baseVal).toFixed(2);
+    const nextTop = baseNum.toFixed(2);
     if (geoMode==="soil") setSoilState({...GEO_SOIL_INIT, top:nextTop});
     else setRockState({...GEO_ROCK_INIT, r_top:nextTop});
     if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
