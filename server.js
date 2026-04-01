@@ -21,6 +21,7 @@ const MIME_TYPES = {
 };
 
 let pool = null;
+let dbDisabledReason = null;
 
 function createHttpError(statusCode, message) {
   const error = new Error(message);
@@ -36,7 +37,7 @@ function hasDatabaseConfig() {
 }
 
 function getPool() {
-  if (!hasDatabaseConfig()) return null;
+  if (!hasDatabaseConfig() || dbDisabledReason) return null;
   if (pool) return pool;
 
   const { Pool } = require("pg");
@@ -206,11 +207,23 @@ async function getHealth() {
   const db = getPool();
   if (!db) {
     const data = readApiData();
-    return { ok: true, backend: "file", projects: data.projects.length };
+    return {
+      ok: true,
+      backend: "file",
+      projects: data.projects.length,
+      databaseConfigured: hasDatabaseConfig(),
+      databaseError: dbDisabledReason,
+    };
   }
 
   const result = await db.query("SELECT COUNT(*)::int AS count FROM projects");
-  return { ok: true, backend: "postgres", projects: result.rows[0]?.count || 0 };
+  return {
+    ok: true,
+    backend: "postgres",
+    projects: result.rows[0]?.count || 0,
+    databaseConfigured: true,
+    databaseError: null,
+  };
 }
 
 async function syncPoints(points) {
@@ -479,17 +492,35 @@ const server = http.createServer(async (req, res) => {
 
 async function start() {
   if (hasDatabaseConfig()) {
-    await ensureDatabaseSchema();
-    await seedDatabaseIfNeeded();
+    try {
+      await ensureDatabaseSchema();
+      await seedDatabaseIfNeeded();
+      dbDisabledReason = null;
+    } catch (error) {
+      dbDisabledReason = error?.message || "Database unavailable";
+      console.error("Database unavailable, starting in file-backed mode.", error);
+      if (pool) {
+        try {
+          await pool.end();
+        } catch (endError) {
+          console.error("Failed to close database pool cleanly.", endError);
+        }
+      }
+      pool = null;
+    }
   }
 
   server.listen(PORT, HOST, () => {
     console.log(`SubStrata Field listening on http://${HOST}:${PORT}`);
   });
 }
+server.on("error", error => {
+  console.error("Failed to start server", error);
+  process.exit(1);
+});
 
 start().catch(error => {
-  console.error("Failed to start server", error);
+  console.error("Failed during startup", error);
   process.exit(1);
 });
 
