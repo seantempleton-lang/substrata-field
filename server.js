@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
 
-const PORT = parseInt(process.env.PORT || "3002", 10);
+const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const APP_DIR = path.join(__dirname, "substrata-field");
 const DATA_PATH = process.env.SUBSTRATA_API_DATA || path.join(__dirname, "api-data.json");
