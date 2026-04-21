@@ -68,6 +68,15 @@ const MODULES = [
 const DEFAULT_API_BASE = window.location.protocol.startsWith("http")
   ? `${window.location.origin}/api`
   : "";
+const MODULE_PENDING_KEYS = {
+  jobs: "jobs",
+  geo: "geology",
+  spt: "spt",
+  core: "core",
+  photos: "photos",
+  notes: "consumable",
+  install: "installation",
+};
 
 function ModuleIcon({ name, size=20, color="currentColor", strokeWidth=2 }) {
   const icons = {
@@ -244,7 +253,14 @@ async function apiJson(path, options={}) {
     headers,
     signal: options.signal || AbortSignal.timeout(10000),
   });
-  if (!res.ok) throw new Error(`Server error ${res.status}`);
+  if (!res.ok) {
+    let message = `Server error ${res.status}`;
+    try {
+      const payload = await res.json();
+      if (payload?.error) message = payload.error;
+    } catch (err) {}
+    throw new Error(message);
+  }
   return res.json();
 }
 
@@ -343,6 +359,43 @@ async function syncActiveJobData(activeJob) {
     pushed: pushedPoints + pushedRecords,
     pulled: pulledRecords,
   };
+}
+
+async function getPendingSyncSummary() {
+  const summary = {
+    total: 0,
+    jobs: 0,
+    geology: 0,
+    spt: 0,
+    core: 0,
+    photos: 0,
+    consumable: 0,
+    installation: 0,
+  };
+
+  const jobsCache = await dbGetAll("jobs_cache");
+  summary.jobs = jobsCache.filter(item =>
+    item.type === "borehole" && (item.is_new || item.sync_status === "pending")
+  ).length;
+
+  summary.geology = (await dbGetAll("geology")).filter(record => record.sync_status === "pending").length;
+  summary.spt = (await dbGetAll("spt")).filter(record => record.sync_status === "pending").length;
+  summary.core = (await dbGetAll("core")).filter(record => record.sync_status === "pending").length;
+  summary.photos = (await dbGetAll("photos")).filter(record => record.sync_status === "pending").length;
+
+  const notes = await dbGetAll("notes");
+  summary.consumable = notes.filter(record =>
+    record.type === "consumable" && record.sync_status === "pending"
+  ).length;
+  summary.installation = notes.filter(record =>
+    record.type === "installation" && record.sync_status === "pending"
+  ).length;
+
+  summary.total = Object.entries(summary)
+    .filter(([key]) => key !== "total")
+    .reduce((sum, [, value]) => sum + value, 0);
+
+  return summary;
 }
 
 // ─── SHARED UI ATOMS ──────────────────────────────────────────────────
@@ -665,6 +718,29 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
                     day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit"
                   })}` : "Not synced yet"}
               </div>
+              <div style={{ fontFamily:T.sans, fontSize:11, color:T.dim, marginBottom:10, lineHeight:1.6 }}>
+                {syncState?.pending?.total
+                  ? `${syncState.pending.total} item${syncState.pending.total !== 1 ? "s" : ""} pending upload`
+                  : "No pending uploads on this device"}
+              </div>
+              {!!syncState?.pending?.total && (
+                <div style={{ fontFamily:T.sans, fontSize:11, color:T.dim, marginBottom:10, lineHeight:1.6 }}>
+                  {[
+                    syncState.pending.jobs ? `${syncState.pending.jobs} jobs` : null,
+                    syncState.pending.geology ? `${syncState.pending.geology} geo` : null,
+                    syncState.pending.spt ? `${syncState.pending.spt} spt` : null,
+                    syncState.pending.core ? `${syncState.pending.core} core` : null,
+                    syncState.pending.photos ? `${syncState.pending.photos} photos` : null,
+                    syncState.pending.consumable ? `${syncState.pending.consumable} consumables` : null,
+                    syncState.pending.installation ? `${syncState.pending.installation} installs` : null,
+                  ].filter(Boolean).join(" · ")}
+                </div>
+              )}
+              {syncState?.error && (
+                <div style={{ fontFamily:T.sans, fontSize:11, color:T.red, marginBottom:10, lineHeight:1.6 }}>
+                  Last sync error: {syncState.error}
+                </div>
+              )}
               <div style={{ display:"flex", gap:8 }}>
                 <Btn onClick={() => setView("select_project")} color={T.accent} small
                   style={{ flex:1 }}>Change Job</Btn>
@@ -4207,7 +4283,14 @@ function App() {
   const [activeJob,    setActiveJob]    = useState(null);
   const [toast,        setToast]        = useState({ msg:"", visible:false });
   const [syncTick,     setSyncTick]     = useState(0);
-  const [syncState,    setSyncState]    = useState({ syncing:false, lastSyncAt:null });
+  const [syncState,    setSyncState]    = useState({
+    syncing:false,
+    lastSyncAt:null,
+    error:null,
+    pending:{
+      total:0, jobs:0, geology:0, spt:0, core:0, photos:0, consumable:0, installation:0,
+    },
+  });
   const toastTimer = useRef(null);
   const syncLock = useRef(false);
 
@@ -4226,33 +4309,44 @@ function App() {
       setToast(t => ({ ...t, visible:false })), 2500);
   }, []);
 
+  const refreshPendingSyncState = useCallback(async () => {
+    const pending = await getPendingSyncSummary();
+    setSyncState(prev => ({ ...prev, pending }));
+    return pending;
+  }, []);
+
   const runSync = useCallback(async ({ silent=false } = {}) => {
     if (syncLock.current) return;
     syncLock.current = true;
-    setSyncState(prev => ({ ...prev, syncing:true }));
+    setSyncState(prev => ({ ...prev, syncing:true, error:null }));
     try {
       const result = await syncActiveJobData(activeJob);
+      const pending = await getPendingSyncSummary();
       if (result.pushed || result.pulled) {
         setSyncTick(t => t + 1);
-        setSyncState({ syncing:false, lastSyncAt:Date.now() });
+        setSyncState(prev => ({ ...prev, syncing:false, lastSyncAt:Date.now(), error:null, pending }));
         if (!silent) showToast(`Synced ${result.pushed + result.pulled} item${result.pushed + result.pulled !== 1 ? "s" : ""}`);
       } else {
-        setSyncState(prev => ({ syncing:false, lastSyncAt:prev.lastSyncAt || Date.now() }));
+        setSyncState(prev => ({ ...prev, syncing:false, lastSyncAt:prev.lastSyncAt || Date.now(), error:null, pending }));
       }
     } catch (err) {
-      setSyncState(prev => ({ ...prev, syncing:false }));
-      if (!silent) showToast("Sync unavailable");
+      const pending = await getPendingSyncSummary();
+      const message = err?.message || "Sync unavailable";
+      setSyncState(prev => ({ ...prev, syncing:false, error:message, pending }));
+      if (!silent) showToast(message);
     } finally {
       syncLock.current = false;
     }
   }, [activeJob, showToast]);
 
   useEffect(() => {
+    refreshPendingSyncState();
     runSync({ silent:true });
   }, []);
 
   useEffect(() => {
     if (!activeJob) return;
+    refreshPendingSyncState();
     runSync({ silent:true });
     const timer = setInterval(() => runSync({ silent:true }), 30000);
     const onOnline = () => runSync({ silent:false });
@@ -4261,7 +4355,7 @@ function App() {
       clearInterval(timer);
       window.removeEventListener("online", onOnline);
     };
-  }, [activeJob, runSync]);
+  }, [activeJob, runSync, refreshPendingSyncState]);
 
   const handleSetActiveJob = useCallback((job) => {
     setActiveJob(job);
@@ -4271,6 +4365,10 @@ function App() {
   const goToJobs = useCallback(() => setActiveModule("jobs"), []);
 
   const activeColor = MODULES.find(m => m.id === activeModule)?.color || T.accent;
+  const modulePendingCounts = Object.fromEntries(
+    MODULES.map(module => [module.id, syncState.pending?.[MODULE_PENDING_KEYS[module.id]] || 0])
+  );
+  const hasPendingSync = (syncState.pending?.total || 0) > 0;
 
   const renderModule = () => {
     switch(activeModule) {
@@ -4332,8 +4430,14 @@ function App() {
                 {activeJob.POINT_ID}
               </div>
             </div>
-            <div style={{ width:7, height:7, borderRadius:"50%",
-              background:T.accent, flexShrink:0 }}/>
+            <div style={{ display:"flex", alignItems:"center", gap:5, flexShrink:0 }}>
+              {hasPendingSync && (
+                <div style={{ width:8, height:8, borderRadius:"50%",
+                  background:T.amber2, boxShadow:`0 0 0 2px ${T.nav}` }}/>
+              )}
+              <div style={{ width:7, height:7, borderRadius:"50%",
+                background:T.accent, flexShrink:0 }}/>
+            </div>
           </button>
         ) : (
           <button onClick={() => setActiveModule("jobs")} style={{
@@ -4358,6 +4462,7 @@ function App() {
         {MODULES.map(m => {
           const active = activeModule === m.id;
           const locked = m.id !== "jobs" && !activeJob;
+          const pending = modulePendingCounts[m.id] || 0;
           return (
             <button key={m.id} onClick={() => !locked && setActiveModule(m.id)} style={{
               flex:1, padding:"10px 0 8px",
@@ -4375,6 +4480,20 @@ function App() {
                   transform:"translateX(-50%)",
                   width:24, height:2, borderRadius:"0 0 2px 2px",
                   background:T.navActive }}/>
+              )}
+              {pending > 0 && (
+                <div style={{
+                  position:"absolute", top:5, right:"calc(50% - 18px)",
+                  minWidth:18, height:18, borderRadius:9,
+                  background: active ? T.navActive : m.color,
+                  color: active ? T.nav : T.white,
+                  border:"1px solid rgba(19,21,26,0.35)",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                  padding:"0 5px", fontFamily:T.sans, fontSize:10, fontWeight:800,
+                  lineHeight:1, boxShadow:"0 2px 6px rgba(0,0,0,0.22)",
+                }}>
+                  {pending > 99 ? "99+" : pending}
+                </div>
               )}
               <ModuleIcon name={m.icon} size={18}
                 color={active ? T.navActive : T.navText}
