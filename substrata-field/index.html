@@ -278,6 +278,7 @@ async function apiJson(path, options={}) {
   const res = await fetch(`${base}${path}`, {
     ...options,
     headers,
+    credentials:"include",
     signal: options.signal || AbortSignal.timeout(10000),
   });
   if (!res.ok) {
@@ -286,9 +287,34 @@ async function apiJson(path, options={}) {
       const payload = await res.json();
       if (payload?.error) message = payload.error;
     } catch (err) {}
-    throw new Error(message);
+    const error = new Error(message);
+    error.status = res.status;
+    throw error;
   }
   return res.json();
+}
+
+async function authJson(path, options={}) {
+  const headers = {
+    ...(options.body ? { "Content-Type":"application/json" } : {}),
+    ...(options.headers || {}),
+  };
+  const res = await fetch(`${DEFAULT_API_BASE}${path}`, {
+    ...options,
+    headers,
+    credentials:"same-origin",
+  });
+  if (!res.ok) {
+    let message = `Server error ${res.status}`;
+    try {
+      const payload = await res.json();
+      if (payload?.error) message = payload.error;
+    } catch (err) {}
+    const error = new Error(message);
+    error.status = res.status;
+    throw error;
+  }
+  return res.status === 204 ? null : res.json();
 }
 
 function getRecordTypeForStore(store, record) {
@@ -573,7 +599,10 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
     if (!effectiveApiBase) { showToast("Enter API address first"); setShowApiEdit(true); return; }
     setSyncing(true);
     try {
-      const res = await fetch(`${effectiveApiBase}/projects`, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(`${effectiveApiBase}/projects`, {
+        credentials:"include",
+        signal: AbortSignal.timeout(8000),
+      });
       if (!res.ok) throw new Error(`Server error ${res.status}`);
       const data = await res.json();
       const cachedProjects = data.map(p => ({ ...p, id:`proj_${p.PROJ_ID}`, type:"project" }));
@@ -591,7 +620,10 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
     setSyncing(true);
     try {
       if (effectiveApiBase) {
-        const res = await fetch(`${effectiveApiBase}/points?proj_id=${projId}`, { signal: AbortSignal.timeout(8000) });
+        const res = await fetch(`${effectiveApiBase}/points?proj_id=${projId}`, {
+          credentials:"include",
+          signal: AbortSignal.timeout(8000),
+        });
         if (!res.ok) throw new Error();
         const data = await res.json();
         const allCached = await dbGetAll("jobs_cache");
@@ -4307,6 +4339,95 @@ function PlaceholderModule({ name, icon, color, activeJob, onGoToJobs }) {
 // ─── ROOT APP ─────────────────────────────────────────────────────────
 const INSTALL_DISMISS_KEY = "substrata_install_prompt_dismissed";
 
+function LoginScreen({ onLogin, loading, error }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const submit = async event => {
+    event.preventDefault();
+    try {
+      await onLogin(username, password);
+    } catch (err) {}
+  };
+
+  return (
+    <div style={{
+      minHeight:"var(--app-height, 100dvh)", background:T.nav, color:T.white,
+      display:"flex", alignItems:"center", justifyContent:"center",
+      padding:"24px 18px", fontFamily:T.sans,
+    }}>
+      <form onSubmit={submit} style={{
+        width:"100%", maxWidth:380, background:T.white, color:T.text,
+        borderRadius:8, padding:"26px 22px", boxShadow:"0 24px 60px rgba(0,0,0,0.34)",
+      }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:24 }}>
+          <div style={{
+            width:44, height:44, borderRadius:8, background:T.nav,
+            display:"flex", alignItems:"center", justifyContent:"center",
+          }}>
+            <span style={{ fontSize:17, fontWeight:900, color:T.amber }}>ST</span>
+          </div>
+          <div>
+            <div style={{ fontSize:20, fontWeight:900, color:T.nav, lineHeight:1 }}>
+              SubStrata Field
+            </div>
+            <div style={{
+              fontSize:10, color:T.dim, fontWeight:800, letterSpacing:"0.12em",
+              textTransform:"uppercase", marginTop:5,
+            }}>
+              Secure field login
+            </div>
+          </div>
+        </div>
+
+        <label style={{ display:"block", marginBottom:14 }}>
+          <div style={{ fontSize:11, fontWeight:800, color:T.dim, marginBottom:6, textTransform:"uppercase" }}>
+            Username or email
+          </div>
+          <input value={username} onChange={event => setUsername(event.target.value)}
+            autoComplete="username" disabled={loading} style={{
+              width:"100%", padding:"12px 13px", borderRadius:7,
+              border:`1px solid ${T.border2}`, fontSize:16, outline:"none",
+              fontFamily:T.sans,
+            }} />
+        </label>
+
+        <label style={{ display:"block", marginBottom:18 }}>
+          <div style={{ fontSize:11, fontWeight:800, color:T.dim, marginBottom:6, textTransform:"uppercase" }}>
+            Password
+          </div>
+          <input type="password" value={password} onChange={event => setPassword(event.target.value)}
+            autoComplete="current-password" disabled={loading} style={{
+              width:"100%", padding:"12px 13px", borderRadius:7,
+              border:`1px solid ${T.border2}`, fontSize:16, outline:"none",
+              fontFamily:T.sans,
+            }} />
+        </label>
+
+        {error && (
+          <div style={{
+            background:"#fef2f2", border:`1px solid ${T.red}55`, color:T.red,
+            borderRadius:7, padding:"10px 12px", fontSize:13, fontWeight:700,
+            lineHeight:1.35, marginBottom:14,
+          }}>
+            {error}
+          </div>
+        )}
+
+        <button type="submit" disabled={loading} style={{
+          width:"100%", border:"none", borderRadius:7, background:T.amber,
+          color:T.nav, padding:"13px 16px", fontSize:15, fontWeight:900,
+          fontFamily:T.sans, cursor:loading ? "default" : "pointer",
+          opacity:loading ? 0.68 : 1,
+          WebkitTapHighlightColor:"transparent",
+        }}>
+          {loading ? "Signing in..." : "Sign in"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function InstallPrompt() {
   const [promptEvent, setPromptEvent] = useState(null);
   const [visible, setVisible] = useState(false);
@@ -4401,6 +4522,9 @@ function App() {
   const [activeJob,    setActiveJob]    = useState(null);
   const [toast,        setToast]        = useState({ msg:"", visible:false });
   const [syncTick,     setSyncTick]     = useState(0);
+  const [authStatus,   setAuthStatus]   = useState("checking");
+  const [currentUser,  setCurrentUser]  = useState(null);
+  const [authError,    setAuthError]    = useState(null);
   const [syncState,    setSyncState]    = useState({
     syncing:false,
     lastSyncAt:null,
@@ -4411,6 +4535,23 @@ function App() {
   });
   const toastTimer = useRef(null);
   const syncLock = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    authJson("/session")
+      .then(session => {
+        if (cancelled) return;
+        setCurrentUser(session.user);
+        setAuthStatus("authenticated");
+      })
+      .catch(error => {
+        if (cancelled) return;
+        setCurrentUser(null);
+        setAuthStatus("unauthenticated");
+        if (error.status && error.status !== 401) setAuthError(error.message);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   // Load active job and seed sample data on mount
   useEffect(() => {
@@ -4425,6 +4566,33 @@ function App() {
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() =>
       setToast(t => ({ ...t, visible:false })), 2500);
+  }, []);
+
+  const login = useCallback(async (username, password) => {
+    setAuthStatus("checking");
+    setAuthError(null);
+    try {
+      const session = await authJson("/session/login", {
+        method:"POST",
+        body:JSON.stringify({ username, email:username, password }),
+      });
+      setCurrentUser(session.user);
+      setAuthStatus("authenticated");
+    } catch (error) {
+      setCurrentUser(null);
+      setAuthStatus("unauthenticated");
+      setAuthError(error.message || "Sign in failed");
+      throw error;
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await authJson("/session/logout", { method:"DELETE" });
+    } catch (err) {}
+    setCurrentUser(null);
+    setAuthStatus("unauthenticated");
+    setActiveModule("jobs");
   }, []);
 
   const refreshPendingSyncState = useCallback(async () => {
@@ -4511,6 +4679,16 @@ function App() {
     }
   };
 
+  if (authStatus !== "authenticated") {
+    return (
+      <LoginScreen
+        onLogin={login}
+        loading={authStatus === "checking"}
+        error={authError}
+      />
+    );
+  }
+
   return (
     <div style={{ background:T.bg, height:"var(--app-height, 100dvh)", display:"flex",
       flexDirection:"column", color:T.text, fontFamily:T.sans, overflow:"hidden" }}>
@@ -4566,6 +4744,15 @@ function App() {
             fontFamily:T.sans, fontSize:12, fontWeight:700, color:T.amber,
           }}>No job selected</button>
         )}
+        <button onClick={logout} aria-label="Sign out" title={currentUser?.name || "Sign out"} style={{
+          width:34, height:34, borderRadius:8, border:"1px solid rgba(255,255,255,0.12)",
+          background:"rgba(255,255,255,0.06)", color:T.navText,
+          fontFamily:T.sans, fontSize:11, fontWeight:900,
+          display:"flex", alignItems:"center", justifyContent:"center",
+          cursor:"pointer", flexShrink:0, WebkitTapHighlightColor:"transparent",
+        }}>
+          {(currentUser?.initials || currentUser?.name || "U").slice(0,2).toUpperCase()}
+        </button>
       </div>
 
       {/* ── MODULE CONTENT ── */}
