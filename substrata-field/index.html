@@ -260,12 +260,7 @@ function uuid() {
 }
 
 async function getApiBase() {
-  try {
-    const stored = await dbGet("active_job", "api_base");
-    return stored?.value || DEFAULT_API_BASE;
-  } catch (err) {
-    return DEFAULT_API_BASE;
-  }
+  return DEFAULT_API_BASE;
 }
 
 async function apiJson(path, options={}) {
@@ -562,7 +557,7 @@ function NoJobGuard({ moduleName, onGoToJobs }) {
 
 const BOREHOLE_TYPES = ["BH","CPT","TP","WS","SCPT","DMT","PLT","OTHER"];
 
-function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }) {
+function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, onAuthExpired }) {
   const [view,        setView]        = useState("home"); // home | select_project | select_borehole | new_borehole
   const [projects,    setProjects]    = useState([]);
   const [search,      setSearch]      = useState("");
@@ -587,7 +582,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
     });
   }, []);
 
-  const effectiveApiBase = apiBase || DEFAULT_API_BASE;
+  const effectiveApiBase = DEFAULT_API_BASE;
 
   const saveApiBase = async (val) => {
     setApiBase(val);
@@ -599,18 +594,19 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
     if (!effectiveApiBase) { showToast("Enter API address first"); setShowApiEdit(true); return; }
     setSyncing(true);
     try {
-      const res = await fetch(`${effectiveApiBase}/projects`, {
-        credentials:"include",
+      const data = await apiJson("/projects", {
         signal: AbortSignal.timeout(8000),
       });
-      if (!res.ok) throw new Error(`Server error ${res.status}`);
-      const data = await res.json();
       const cachedProjects = data.map(p => ({ ...p, id:`proj_${p.PROJ_ID}`, type:"project" }));
       await replaceCachedProjects(data);
       setProjects(cachedProjects);
       showToast(`${data.length} projects loaded`);
     } catch(e) {
-      showToast("Could not reach server");
+      if (e?.status === 401) {
+        onAuthExpired?.();
+      } else {
+        showToast(e?.message || "Could not reach server");
+      }
     }
     setSyncing(false);
   };
@@ -620,12 +616,9 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
     setSyncing(true);
     try {
       if (effectiveApiBase) {
-        const res = await fetch(`${effectiveApiBase}/points?proj_id=${projId}`, {
-          credentials:"include",
+        const data = await apiJson(`/points?proj_id=${encodeURIComponent(projId)}`, {
           signal: AbortSignal.timeout(8000),
         });
-        if (!res.ok) throw new Error();
-        const data = await res.json();
         const allCached = await dbGetAll("jobs_cache");
         // Cache under project
         const cached = data.map(b => ({
@@ -639,6 +632,11 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow }
         setBoreholes(all.filter(i => i.type === "borehole" && i.PROJ_ID === projId));
       }
     } catch(e) {
+      if (e?.status === 401) {
+        onAuthExpired?.();
+        setSyncing(false);
+        return;
+      }
       // Fall back to cache
       const all = await dbGetAll("jobs_cache");
       setBoreholes(all.filter(i => i.type === "borehole" && i.PROJ_ID === projId));
@@ -4595,6 +4593,12 @@ function App() {
     setActiveModule("jobs");
   }, []);
 
+  const handleAuthExpired = useCallback(() => {
+    setCurrentUser(null);
+    setAuthStatus("unauthenticated");
+    setAuthError("Your session has expired. Please sign in again.");
+  }, []);
+
   const refreshPendingSyncState = useCallback(async () => {
     const pending = await getPendingSyncSummary();
     setSyncState(prev => ({ ...prev, pending }));
@@ -4602,6 +4606,7 @@ function App() {
   }, []);
 
   const runSync = useCallback(async ({ silent=false } = {}) => {
+    if (authStatus !== "authenticated") return;
     if (syncLock.current) return;
     syncLock.current = true;
     setSyncState(prev => ({ ...prev, syncing:true, error:null }));
@@ -4619,18 +4624,26 @@ function App() {
       const pending = await getPendingSyncSummary();
       const message = err?.message || "Sync unavailable";
       setSyncState(prev => ({ ...prev, syncing:false, error:message, pending }));
-      if (!silent) showToast(message);
+      if (err?.status === 401) {
+          setCurrentUser(null);
+          setAuthStatus("unauthenticated");
+          setAuthError("Your session has expired. Please sign in again.");
+      } else if (!silent) {
+        showToast(message);
+      }
     } finally {
       syncLock.current = false;
     }
-  }, [activeJob, showToast]);
+  }, [activeJob, authStatus, showToast]);
 
   useEffect(() => {
+    if (authStatus !== "authenticated") return;
     refreshPendingSyncState();
     runSync({ silent:true });
-  }, []);
+  }, [authStatus, refreshPendingSyncState, runSync]);
 
   useEffect(() => {
+    if (authStatus !== "authenticated") return;
     if (!activeJob) return;
     refreshPendingSyncState();
     runSync({ silent:true });
@@ -4641,7 +4654,7 @@ function App() {
       clearInterval(timer);
       window.removeEventListener("online", onOnline);
     };
-  }, [activeJob, runSync, refreshPendingSyncState]);
+  }, [activeJob, authStatus, runSync, refreshPendingSyncState]);
 
   const handleSetActiveJob = useCallback((job) => {
     setActiveJob(job);
@@ -4664,7 +4677,8 @@ function App() {
           setActiveJob={handleSetActiveJob}
           showToast={showToast}
           syncState={syncState}
-          onSyncNow={() => runSync({ silent:false })} />;
+          onSyncNow={() => runSync({ silent:false })}
+          onAuthExpired={handleAuthExpired} />;
       case "geo": return <GeoModule activeJob={activeJob} showToast={showToast} syncTick={syncTick}/>;
       case "spt": return <SPTModule activeJob={activeJob} showToast={showToast} syncTick={syncTick}/>;
       case "core":

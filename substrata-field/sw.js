@@ -1,4 +1,4 @@
-const CACHE = "substrata-v8";
+const CACHE = "substrata-v10";
 const APP_SHELL = [
   "./",
   "./index.html",
