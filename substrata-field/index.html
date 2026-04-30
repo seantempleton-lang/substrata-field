@@ -11,9 +11,9 @@
 <link rel="manifest" href="manifest.json">
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; overflow: hidden; }
+html, body { height: 100%; height: 100dvh; overflow: hidden; }
 body { background: #13151a; font-family: "Segoe UI", "SF Pro Text", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif; }
-#root { height: 100%; }
+#root { height: 100%; height: var(--app-height, 100dvh); }
 </style>
 </head>
 <body>
@@ -23,6 +23,32 @@ body { background: #13151a; font-family: "Segoe UI", "SF Pro Text", "SF Pro Disp
 <script src="./vendor/babel.min.js"></script>
 <script type="text/babel">
 const { useState, useCallback, useEffect, useRef } = React;
+
+function setAppViewportHeight() {
+  const height = window.visualViewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${height}px`);
+}
+setAppViewportHeight();
+window.visualViewport?.addEventListener("resize", setAppViewportHeight);
+window.addEventListener("resize", setAppViewportHeight);
+
+function isStandaloneApp() {
+  return window.matchMedia?.("(display-mode: standalone)")?.matches ||
+    window.navigator.standalone === true;
+}
+
+function isMobileInstallTarget() {
+  const ua = navigator.userAgent || "";
+  const appleTouch = /iPhone|iPad|iPod/i.test(ua) ||
+    (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
+  return /Android/i.test(ua) || appleTouch;
+}
+
+function isIosInstallTarget() {
+  const ua = navigator.userAgent || "";
+  return (/iPhone|iPad|iPod/i.test(ua) ||
+    (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) && !isStandaloneApp();
+}
 
 
 // ─── DESIGN TOKENS ────────────────────────────────────────────────────
@@ -4278,6 +4304,97 @@ function PlaceholderModule({ name, icon, color, activeJob, onGoToJobs }) {
 }
 
 // ─── ROOT APP ─────────────────────────────────────────────────────────
+const INSTALL_DISMISS_KEY = "substrata_install_prompt_dismissed";
+
+function InstallPrompt() {
+  const [promptEvent, setPromptEvent] = useState(null);
+  const [visible, setVisible] = useState(false);
+  const [iosMode, setIosMode] = useState(false);
+
+  useEffect(() => {
+    if (!isMobileInstallTarget() || isStandaloneApp()) return;
+    if (localStorage.getItem(INSTALL_DISMISS_KEY) === "true") return;
+
+    const ios = isIosInstallTarget();
+    setIosMode(ios);
+    if (ios) setVisible(true);
+
+    const onBeforeInstallPrompt = event => {
+      event.preventDefault();
+      setPromptEvent(event);
+      setVisible(true);
+    };
+    const onAppInstalled = () => {
+      localStorage.setItem(INSTALL_DISMISS_KEY, "true");
+      setVisible(false);
+      setPromptEvent(null);
+    };
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onAppInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onAppInstalled);
+    };
+  }, []);
+
+  const dismiss = () => {
+    localStorage.setItem(INSTALL_DISMISS_KEY, "true");
+    setVisible(false);
+  };
+
+  const install = async () => {
+    if (!promptEvent) return;
+    promptEvent.prompt();
+    await promptEvent.userChoice.catch(() => null);
+    setPromptEvent(null);
+    setVisible(false);
+  };
+
+  if (!visible) return null;
+
+  return (
+    <div style={{
+      position:"fixed", left:12, right:12,
+      bottom:"calc(72px + env(safe-area-inset-bottom, 0px))",
+      zIndex:40, background:T.nav, color:T.white,
+      border:"1px solid rgba(255,255,255,0.12)", borderRadius:8,
+      boxShadow:"0 12px 28px rgba(0,0,0,0.28)",
+      padding:"12px 12px 12px 14px", display:"flex",
+      alignItems:"center", gap:12, fontFamily:T.sans,
+    }}>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:13, fontWeight:800, lineHeight:1.2 }}>
+          Install SubStrata Field
+        </div>
+        <div style={{ color:T.navText, fontSize:12, lineHeight:1.35, marginTop:3 }}>
+          {iosMode
+            ? "Tap Share, then Add to Home Screen for the full mobile app."
+            : "Add it to your home screen for faster offline field access."}
+        </div>
+      </div>
+      {promptEvent && (
+        <button onClick={install} style={{
+          border:"none", borderRadius:7, background:T.navActive, color:T.nav,
+          padding:"9px 12px", fontSize:12, fontWeight:800,
+          fontFamily:T.sans, cursor:"pointer", flexShrink:0,
+          WebkitTapHighlightColor:"transparent",
+        }}>
+          Install
+        </button>
+      )}
+      <button onClick={dismiss} aria-label="Dismiss install prompt" style={{
+        width:32, height:32, borderRadius:7, border:"1px solid rgba(255,255,255,0.12)",
+        background:"rgba(255,255,255,0.06)", color:T.white, fontSize:16,
+        fontWeight:700, fontFamily:T.sans, cursor:"pointer", flexShrink:0,
+        WebkitTapHighlightColor:"transparent",
+      }}>
+        x
+      </button>
+    </div>
+  );
+}
+
 function App() {
   const [activeModule, setActiveModule] = useState("jobs");
   const [activeJob,    setActiveJob]    = useState(null);
@@ -4394,7 +4511,7 @@ function App() {
   };
 
   return (
-    <div style={{ background:T.bg, height:"100vh", display:"flex",
+    <div style={{ background:T.bg, height:"var(--app-height, 100dvh)", display:"flex",
       flexDirection:"column", color:T.text, fontFamily:T.sans, overflow:"hidden" }}>
 
       {/* ── HEADER ── dark nav style */}
@@ -4457,6 +4574,7 @@ function App() {
 
       {/* ── TAB BAR — dark SubStrata style ── */}
       <div style={{ background:T.nav, display:"flex", flexShrink:0,
+        position:"sticky", bottom:0, zIndex:20,
         borderTop:"1px solid rgba(255,255,255,0.06)",
         paddingBottom:"env(safe-area-inset-bottom, 0px)" }}>
         {MODULES.map(m => {
@@ -4509,6 +4627,7 @@ function App() {
         })}
       </div>
 
+      <InstallPrompt />
       <Toast message={toast.msg} visible={toast.visible} />
     </div>
   );
