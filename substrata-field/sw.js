@@ -1,10 +1,9 @@
-const CACHE = "substrata-v6";
+const CACHE = "substrata-v7";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./icon-192.png",
-  "./icon-512.png",
+  "./favicon.svg",
   "./sw.js",
   "./vendor/react.production.min.js",
   "./vendor/react-dom.production.min.js",
