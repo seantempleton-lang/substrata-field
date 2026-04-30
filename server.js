@@ -543,7 +543,11 @@ async function getSessionFromRequest(req) {
   const db = getPool();
   if (!db) throw createHttpError(503, "Authentication requires PostgreSQL configuration");
 
-  const sessionToken = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME];
+  const authHeader = req.headers.authorization || "";
+  const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  const sessionToken = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] || bearerToken;
   if (!sessionToken) return null;
 
   const result = await db.query(
@@ -948,7 +952,11 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/session" && req.method === "GET") {
     const session = await requireAuth(req, res);
-    sendJson(res, 200, { user: session.user, expiresAt: session.expiresAt });
+    sendJson(res, 200, {
+      user: session.user,
+      expiresAt: session.expiresAt,
+      sessionToken: session.sessionToken,
+    });
     return;
   }
 
