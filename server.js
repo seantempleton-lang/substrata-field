@@ -968,7 +968,11 @@ async function handleApi(req, res, url) {
       getAuditContext(req)
     );
     setSessionCookie(res, session.sessionToken, session.expiresAt);
-    sendJson(res, 200, { user: session.user, expiresAt: session.expiresAt });
+    sendJson(res, 200, {
+      user: session.user,
+      expiresAt: session.expiresAt,
+      sessionToken: session.sessionToken,
+    });
     return;
   }
 

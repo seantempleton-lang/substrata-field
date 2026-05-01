@@ -4597,6 +4597,7 @@ function App() {
         method:"POST",
         body:JSON.stringify({ username, email:username, password }),
       });
+      if (!session.sessionToken) throw new Error("Login did not return a session token.");
       setStoredSessionToken(session.sessionToken);
       setCurrentUser(session.user);
       setAuthStatus("authenticated");
