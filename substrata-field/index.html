@@ -590,6 +590,8 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
   const [syncing,     setSyncing]     = useState(false);
   const [apiBase,     setApiBase]     = useState(DEFAULT_API_BASE);
   const [showApiEdit, setShowApiEdit] = useState(false);
+  const [coreGsSyncing, setCoreGsSyncing] = useState(false);
+  const [coreGsPreview, setCoreGsPreview] = useState(null);
   const [newBH,       setNewBH]       = useState({
     POINT_ID:"", Type:"BH", HoleDepth:"", Location:"", Remarks:""
   });
@@ -713,6 +715,37 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     await dbDelete("active_job","active");
     setActiveJob(null);
     showToast("Job cleared");
+  };
+
+  const runCoreGsSync = async ({ dryRun }) => {
+    setCoreGsSyncing(true);
+    try {
+      const result = await apiJson("/core-gs/sync/projects-points", {
+        method:"POST",
+        body: JSON.stringify({ dryRun }),
+        signal: AbortSignal.timeout(20000),
+      });
+      setCoreGsPreview(result);
+      const projectsChanged = (result.projects?.insert || 0) + (result.projects?.update || 0);
+      const pointsChanged = (result.points?.insert || 0) + (result.points?.update || 0);
+      showToast(dryRun
+        ? `Preview ready: ${projectsChanged} projects, ${pointsChanged} points`
+        : `CORE-GS updated: ${projectsChanged} projects, ${pointsChanged} points`);
+    } catch(e) {
+      if (e?.status === 401) {
+        onAuthExpired?.();
+      } else {
+        showToast(e?.message || "CORE-GS sync failed");
+      }
+    } finally {
+      setCoreGsSyncing(false);
+    }
+  };
+
+  const previewCoreGsSync = () => runCoreGsSync({ dryRun:true });
+  const pushCoreGsSync = () => {
+    const ok = window.confirm("Push Field projects and boreholes to CORE-GS as Geotechnical?");
+    if (ok) runCoreGsSync({ dryRun:false });
   };
 
   const filteredProjects = projects.filter(p =>
@@ -847,6 +880,63 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
           </div>
         </>
       )}
+
+      <SectionLabel>CORE-GS Bridge</SectionLabel>
+      <Card>
+        <CardSection last>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12 }}>
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontFamily:T.sans, fontSize:14, fontWeight:800, color:T.text }}>
+                Projects & Boreholes
+              </div>
+              <div style={{ fontFamily:T.sans, fontSize:12, color:T.dim, marginTop:4, lineHeight:1.45 }}>
+                Pushes the Field project list and borehole list into CORE-GS.
+              </div>
+            </div>
+            <div style={{
+              fontFamily:T.sans, fontSize:10, fontWeight:800, color:T.accent,
+              border:`1px solid ${T.accent}55`, borderRadius:7, padding:"4px 7px",
+              flexShrink:0,
+            }}>
+              Geotechnical
+            </div>
+          </div>
+
+          {coreGsPreview && (
+            <div style={{
+              marginTop:12, padding:10, borderRadius:8,
+              background:T.surface2, border:`1px solid ${T.border}`,
+              fontFamily:T.sans, fontSize:12, color:T.dim, lineHeight:1.55,
+            }}>
+              <div style={{ color:T.text, fontWeight:800, marginBottom:3 }}>
+                {coreGsPreview.dryRun ? "Preview" : "Last push"}
+              </div>
+              <div>
+                Projects: {coreGsPreview.projects?.insert || 0} insert, {coreGsPreview.projects?.update || 0} update
+              </div>
+              <div>
+                Points: {coreGsPreview.points?.insert || 0} insert, {coreGsPreview.points?.update || 0} update
+              </div>
+              {!!coreGsPreview.points?.missingProject && (
+                <div style={{ color:T.red }}>
+                  {coreGsPreview.points.missingProject} point{coreGsPreview.points.missingProject !== 1 ? "s" : ""} missing a project
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display:"flex", gap:8, marginTop:12 }}>
+            <Btn onClick={previewCoreGsSync} outline color={T.blue} small
+              disabled={coreGsSyncing} style={{ flex:1 }}>
+              {coreGsSyncing ? "Working..." : "Preview"}
+            </Btn>
+            <Btn onClick={pushCoreGsSync} color={T.accent} small
+              disabled={coreGsSyncing} style={{ flex:1 }}>
+              Push to CORE-GS
+            </Btn>
+          </div>
+        </CardSection>
+      </Card>
 
       {/* API Server config */}
       <SectionLabel>Server Connection</SectionLabel>

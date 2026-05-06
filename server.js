@@ -569,6 +569,197 @@ async function getPoints(projId) {
   return result.rows;
 }
 
+function nullableText(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function nullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+async function getFieldProjectPointRows() {
+  const projects = await getProjects();
+  const pointsByProject = await Promise.all(projects.map(async project => {
+    const points = await getPoints(project.PROJ_ID);
+    return points.map(point => ({
+      ...point,
+      PROJ_ID: project.PROJ_ID,
+    }));
+  }));
+
+  return {
+    projects: projects.map(project => ({
+      PROJ_ID: nullableText(project.PROJ_ID),
+      PROJ_NAME: nullableText(project.PROJ_NAME),
+      Location: nullableText(project.Location),
+      Client: nullableText(project.Client),
+      Engineer: nullableText(project.Engineer),
+    })).filter(project => project.PROJ_ID && project.PROJ_NAME),
+    points: pointsByProject.flat().map(point => ({
+      PROJ_ID: nullableText(point.PROJ_ID),
+      POINT_ID: nullableText(point.POINT_ID),
+      Type: nullableText(point.Type),
+      HoleDepth: nullableNumber(point.HoleDepth),
+      Location: nullableText(point.Location),
+    })).filter(point => point.PROJ_ID && point.POINT_ID),
+  };
+}
+
+async function getCoreGsProjectPointPreview() {
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const { projects, points } = await getFieldProjectPointRows();
+  const preview = {
+    ok: true,
+    dryRun: true,
+    clientId: CORE_GS_CLNT_ID,
+    projects: { total: projects.length, insert: 0, update: 0 },
+    points: { total: points.length, insert: 0, update: 0, missingProject: 0 },
+  };
+
+  for (const project of projects) {
+    const result = await pool.request()
+      .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+      .input("PROJ_ID", sql.NVarChar(40), project.PROJ_ID)
+      .query(`
+        SELECT TOP 1 1 AS found
+        FROM dbo.PROJECT
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID;
+      `);
+    if (result.recordset.length) preview.projects.update += 1;
+    else preview.projects.insert += 1;
+  }
+
+  for (const point of points) {
+    const result = await pool.request()
+      .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+      .input("PROJ_ID", sql.NVarChar(40), point.PROJ_ID)
+      .input("POINT_ID", sql.NVarChar(40), point.POINT_ID)
+      .query(`
+        SELECT
+          CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.PROJECT WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID
+          ) THEN 1 ELSE 0 END AS project_found,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.POINT
+            WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID
+          ) THEN 1 ELSE 0 END AS point_found;
+      `);
+    const row = result.recordset[0] || {};
+    if (!row.project_found && !projects.some(project => project.PROJ_ID === point.PROJ_ID)) {
+      preview.points.missingProject += 1;
+    }
+    if (row.point_found) preview.points.update += 1;
+    else preview.points.insert += 1;
+  }
+
+  return preview;
+}
+
+async function upsertCoreGsProject(transaction, project) {
+  const sql = require("mssql");
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), project.PROJ_ID)
+    .input("PROJ_NAME", sql.VarChar(sql.MAX), project.PROJ_NAME)
+    .input("Location", sql.VarChar(sql.MAX), project.Location)
+    .input("Client", sql.NVarChar(200), project.Client)
+    .input("Engineer", sql.VarChar(sql.MAX), project.Engineer)
+    .query(`
+      IF EXISTS (
+        SELECT 1 FROM dbo.PROJECT WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID
+      )
+      BEGIN
+        UPDATE dbo.PROJECT
+        SET PROJ_NAME = @PROJ_NAME,
+            Location = @Location,
+            Client = @Client,
+            Engineer = @Engineer
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID;
+        SELECT CAST('update' AS varchar(10)) AS action;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.PROJECT (CLNT_ID, PROJ_ID, PROJ_NAME, Location, Client, Engineer)
+        VALUES (@CLNT_ID, @PROJ_ID, @PROJ_NAME, @Location, @Client, @Engineer);
+        SELECT CAST('insert' AS varchar(10)) AS action;
+      END
+    `);
+  return result.recordset?.[0]?.action || "unknown";
+}
+
+async function upsertCoreGsPoint(transaction, point) {
+  const sql = require("mssql");
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), point.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), point.POINT_ID)
+    .input("HoleDepth", sql.Decimal(6, 2), point.HoleDepth)
+    .input("Location", sql.VarChar(sql.MAX), point.Location)
+    .input("Type", sql.VarChar(20), point.Type)
+    .query(`
+      IF EXISTS (
+        SELECT 1 FROM dbo.POINT
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID
+      )
+      BEGIN
+        UPDATE dbo.POINT
+        SET HoleDepth = @HoleDepth,
+            Location = @Location,
+            Type = @Type
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID;
+        SELECT CAST('update' AS varchar(10)) AS action;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.POINT (CLNT_ID, PROJ_ID, POINT_ID, HoleDepth, Location, Type)
+        VALUES (@CLNT_ID, @PROJ_ID, @POINT_ID, @HoleDepth, @Location, @Type);
+        SELECT CAST('insert' AS varchar(10)) AS action;
+      END
+    `);
+  return result.recordset?.[0]?.action || "unknown";
+}
+
+async function syncCoreGsProjectsAndPoints({ dryRun = true } = {}) {
+  if (dryRun) return getCoreGsProjectPointPreview();
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const { projects, points } = await getFieldProjectPointRows();
+  const transaction = new sql.Transaction(pool);
+  const summary = {
+    ok: true,
+    dryRun: false,
+    clientId: CORE_GS_CLNT_ID,
+    projects: { total: projects.length, insert: 0, update: 0 },
+    points: { total: points.length, insert: 0, update: 0 },
+  };
+
+  await transaction.begin();
+  try {
+    for (const project of projects) {
+      const action = await upsertCoreGsProject(transaction, project);
+      if (action === "insert") summary.projects.insert += 1;
+      if (action === "update") summary.projects.update += 1;
+    }
+
+    for (const point of points) {
+      const action = await upsertCoreGsPoint(transaction, point);
+      if (action === "insert") summary.points.insert += 1;
+      if (action === "update") summary.points.update += 1;
+    }
+
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    await transaction.rollback().catch(() => null);
+    throw error;
+  }
+}
+
 async function getHealth() {
   const db = getPool();
   if (!db) {
@@ -1098,6 +1289,17 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/core-gs/test-connection" && req.method === "POST") {
     sendJson(res, 200, await testCoreGsConnection());
+    return;
+  }
+
+  if (url.pathname === "/api/core-gs/sync/projects-points" && req.method === "GET") {
+    sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: true }));
+    return;
+  }
+
+  if (url.pathname === "/api/core-gs/sync/projects-points" && req.method === "POST") {
+    const body = await readRequestBody(req);
+    sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: body.dryRun !== false }));
     return;
   }
 
