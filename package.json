@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "mssql": "^12.5.2",
     "pg": "^8.13.1"
   },
   "scripts": {

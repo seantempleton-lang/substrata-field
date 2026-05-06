@@ -12,6 +12,8 @@ const SHOULD_SEED = String(process.env.SUBSTRATA_SEED_DB || "true").toLowerCase(
 const SESSION_COOKIE_NAME = "substrata_session";
 const SESSION_DURATION_DAYS = 30;
 const APP_ROLE_ORDER = ["FieldUser", "Maintenance", "Supervisor", "Administrator", "SuperUser"];
+const CORE_GS_ENABLED = String(process.env.CORE_GS_ENABLED || "false").toLowerCase() === "true";
+const CORE_GS_CLNT_ID = process.env.CORE_GS_CLNT_ID || "Geotechnical";
 const AUTH_SEED_USERS = [
   {
     employeeCode: "EMP-001",
@@ -92,6 +94,7 @@ const MIME_TYPES = {
 };
 
 let pool = null;
+let coreGsPool = null;
 let dbDisabledReason = null;
 
 function createHttpError(statusCode, message) {
@@ -206,6 +209,78 @@ function getPool() {
 
   pool = new Pool(config);
   return pool;
+}
+
+function hasCoreGsConfig() {
+  return Boolean(
+    process.env.CORE_GS_HOST &&
+    process.env.CORE_GS_DATABASE &&
+    process.env.CORE_GS_USER &&
+    process.env.CORE_GS_PASSWORD
+  );
+}
+
+async function getCoreGsPool() {
+  if (!CORE_GS_ENABLED) {
+    throw createHttpError(503, "CORE-GS bridge is disabled");
+  }
+  if (!hasCoreGsConfig()) {
+    throw createHttpError(503, "CORE-GS connection is not configured");
+  }
+  if (coreGsPool) return coreGsPool;
+
+  const sql = require("mssql");
+  const port = process.env.CORE_GS_PORT ? parseInt(process.env.CORE_GS_PORT, 10) : undefined;
+  const instanceName = process.env.CORE_GS_INSTANCE || undefined;
+  coreGsPool = await new sql.ConnectionPool({
+    server: process.env.CORE_GS_HOST,
+    ...(port ? { port } : {}),
+    database: process.env.CORE_GS_DATABASE,
+    user: process.env.CORE_GS_USER,
+    password: process.env.CORE_GS_PASSWORD,
+    options: {
+      ...(instanceName ? { instanceName } : {}),
+      encrypt: String(process.env.CORE_GS_ENCRYPT || "false").toLowerCase() === "true",
+      trustServerCertificate: String(process.env.CORE_GS_TRUST_SERVER_CERTIFICATE || "true").toLowerCase() !== "false",
+    },
+    pool: {
+      max: 5,
+      min: 0,
+      idleTimeoutMillis: 30000,
+    },
+  }).connect();
+  return coreGsPool;
+}
+
+async function testCoreGsConnection() {
+  const pool = await getCoreGsPool();
+  const result = await pool.request().query(`
+    SELECT
+      DB_NAME() AS database_name,
+      @@SERVERNAME AS server_name,
+      SERVERPROPERTY('MachineName') AS machine_name,
+      SERVERPROPERTY('InstanceName') AS instance_name,
+      SERVERPROPERTY('ProductVersion') AS product_version,
+      SERVERPROPERTY('ProductLevel') AS product_level,
+      SERVERPROPERTY('Edition') AS edition,
+      SUSER_SNAME() AS login_name;
+  `);
+  const row = result.recordset?.[0] || {};
+  return {
+    ok: true,
+    host: process.env.CORE_GS_HOST,
+    instance: process.env.CORE_GS_INSTANCE || null,
+    port: process.env.CORE_GS_PORT || null,
+    database: row.database_name || process.env.CORE_GS_DATABASE,
+    serverName: row.server_name || null,
+    machineName: row.machine_name || null,
+    instanceName: row.instance_name || null,
+    productVersion: row.product_version || null,
+    productLevel: row.product_level || null,
+    edition: row.edition || null,
+    loginName: row.login_name || process.env.CORE_GS_USER,
+    clientId: CORE_GS_CLNT_ID,
+  };
 }
 
 function readApiData() {
@@ -504,6 +579,14 @@ async function getHealth() {
       projects: data.projects.length,
       databaseConfigured: hasDatabaseConfig(),
       databaseError: dbDisabledReason,
+      coreGs: {
+        enabled: CORE_GS_ENABLED,
+        configured: hasCoreGsConfig(),
+        clientId: CORE_GS_CLNT_ID,
+        host: process.env.CORE_GS_HOST || null,
+        instance: process.env.CORE_GS_INSTANCE || null,
+        port: process.env.CORE_GS_PORT || null,
+      },
     };
   }
 
@@ -514,6 +597,14 @@ async function getHealth() {
     projects: result.rows[0]?.count || 0,
     databaseConfigured: true,
     databaseError: null,
+    coreGs: {
+      enabled: CORE_GS_ENABLED,
+      configured: hasCoreGsConfig(),
+      clientId: CORE_GS_CLNT_ID,
+      host: process.env.CORE_GS_HOST || null,
+      instance: process.env.CORE_GS_INSTANCE || null,
+      port: process.env.CORE_GS_PORT || null,
+    },
   };
 }
 
@@ -990,6 +1081,25 @@ async function handleApi(req, res, url) {
   }
 
   await requireAuth(req, res);
+
+  if (url.pathname === "/api/core-gs/status" && req.method === "GET") {
+    sendJson(res, 200, {
+      enabled: CORE_GS_ENABLED,
+      configured: hasCoreGsConfig(),
+      host: process.env.CORE_GS_HOST || null,
+      instance: process.env.CORE_GS_INSTANCE || null,
+      port: process.env.CORE_GS_PORT || null,
+      database: process.env.CORE_GS_DATABASE || null,
+      user: process.env.CORE_GS_USER || null,
+      clientId: CORE_GS_CLNT_ID,
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/core-gs/test-connection" && req.method === "POST") {
+    sendJson(res, 200, await testCoreGsConnection());
+    return;
+  }
 
   if (url.pathname === "/api/projects") {
     sendJson(res, 200, await getProjects());
