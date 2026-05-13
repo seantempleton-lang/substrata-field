@@ -103,6 +103,14 @@ function createHttpError(statusCode, message) {
   return error;
 }
 
+function createCoreGsError(error, context = "CORE-GS request") {
+  const sqlMessage = error?.originalError?.info?.message || error?.precedingErrors?.[0]?.message || error?.message;
+  const message = sqlMessage ? `${context} failed: ${sqlMessage}` : `${context} failed`;
+  const wrapped = createHttpError(502, message);
+  wrapped.cause = error;
+  return wrapped;
+}
+
 function hashToken(token) {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -616,7 +624,7 @@ async function getCoreGsProjectPointPreview() {
     ok: true,
     dryRun: true,
     clientId: CORE_GS_CLNT_ID,
-    projects: { total: projects.length, insert: 0, update: 0 },
+    projects: { total: projects.length, insert: 0, update: 0, unmatchedClient: 0 },
     points: { total: points.length, insert: 0, update: 0, missingProject: 0 },
   };
 
@@ -624,13 +632,20 @@ async function getCoreGsProjectPointPreview() {
     const result = await pool.request()
       .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
       .input("PROJ_ID", sql.NVarChar(40), project.PROJ_ID)
+      .input("Client", sql.NVarChar(200), project.Client)
       .query(`
-        SELECT TOP 1 1 AS found
-        FROM dbo.PROJECT
-        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID;
+        SELECT
+          CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.PROJECT WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID
+          ) THEN 1 ELSE 0 END AS project_found,
+          CASE WHEN @Client IS NULL OR EXISTS (
+            SELECT 1 FROM dbo.Clients WHERE CLNT_ID = @CLNT_ID AND CLIENT_ID = @Client
+          ) THEN 1 ELSE 0 END AS client_found;
       `);
-    if (result.recordset.length) preview.projects.update += 1;
+    const row = result.recordset[0] || {};
+    if (row.project_found) preview.projects.update += 1;
     else preview.projects.insert += 1;
+    if (!row.client_found) preview.projects.unmatchedClient += 1;
   }
 
   for (const point of points) {
@@ -676,7 +691,13 @@ async function upsertCoreGsProject(transaction, project) {
         UPDATE dbo.PROJECT
         SET PROJ_NAME = @PROJ_NAME,
             Location = @Location,
-            Client = @Client,
+            Client = CASE
+              WHEN @Client IS NULL THEN NULL
+              WHEN EXISTS (
+                SELECT 1 FROM dbo.Clients WHERE CLNT_ID = @CLNT_ID AND CLIENT_ID = @Client
+              ) THEN @Client
+              ELSE NULL
+            END,
             Engineer = @Engineer
         WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID;
         SELECT CAST('update' AS varchar(10)) AS action;
@@ -684,7 +705,20 @@ async function upsertCoreGsProject(transaction, project) {
       ELSE
       BEGIN
         INSERT INTO dbo.PROJECT (CLNT_ID, PROJ_ID, PROJ_NAME, Location, Client, Engineer)
-        VALUES (@CLNT_ID, @PROJ_ID, @PROJ_NAME, @Location, @Client, @Engineer);
+        VALUES (
+          @CLNT_ID,
+          @PROJ_ID,
+          @PROJ_NAME,
+          @Location,
+          CASE
+            WHEN @Client IS NULL THEN NULL
+            WHEN EXISTS (
+              SELECT 1 FROM dbo.Clients WHERE CLNT_ID = @CLNT_ID AND CLIENT_ID = @Client
+            ) THEN @Client
+            ELSE NULL
+          END,
+          @Engineer
+        );
         SELECT CAST('insert' AS varchar(10)) AS action;
       END
     `);
@@ -1293,13 +1327,21 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === "/api/core-gs/sync/projects-points" && req.method === "GET") {
-    sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: true }));
+    try {
+      sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: true }));
+    } catch (error) {
+      throw createCoreGsError(error, "CORE-GS preview");
+    }
     return;
   }
 
   if (url.pathname === "/api/core-gs/sync/projects-points" && req.method === "POST") {
     const body = await readRequestBody(req);
-    sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: body.dryRun !== false }));
+    try {
+      sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: body.dryRun !== false }));
+    } catch (error) {
+      throw createCoreGsError(error, body.dryRun === false ? "CORE-GS push" : "CORE-GS preview");
+    }
     return;
   }
 

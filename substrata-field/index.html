@@ -914,6 +914,11 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
               <div>
                 Projects: {coreGsPreview.projects?.insert || 0} insert, {coreGsPreview.projects?.update || 0} update
               </div>
+              {!!coreGsPreview.projects?.unmatchedClient && (
+                <div style={{ color:T.amber }}>
+                  {coreGsPreview.projects.unmatchedClient} client value{coreGsPreview.projects.unmatchedClient !== 1 ? "s" : ""} not found in CORE-GS
+                </div>
+              )}
               <div>
                 Points: {coreGsPreview.points?.insert || 0} insert, {coreGsPreview.points?.update || 0} update
               </div>
