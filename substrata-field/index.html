@@ -1950,6 +1950,10 @@ function GeoModule({ activeJob, showToast, syncTick }) {
 // =======================================================================
 
 const SPT_CFG = { incrMm:75, seatCount:2, total:6, hardLimit:60, colour:T.blue };
+const SPT_TYPES = [
+  { value:"S", label:"Spoon", detail:"Raymond Split Spoon" },
+  { value:"C", label:"Cone", detail:"Solid Cone" },
+];
 
 function SPTHistoryScreen({ records, onDelete }) {
   if (!records.length) return (
@@ -1974,6 +1978,11 @@ function SPTHistoryScreen({ records, onDelete }) {
                 letterSpacing:"0.08em" }}>SPT</span>
               <span style={{ fontFamily:T.sans, fontSize:14, fontWeight:700, color:T.blue }}>
                 {parseFloat(r.top||0).toFixed(2)}m</span>
+              {r.Type && (
+                <span style={{ fontFamily:T.sans, fontSize:11, fontWeight:700,
+                  color:T.dim, border:`1px solid ${T.border}`, borderRadius:6,
+                  padding:"2px 7px" }}>{r.Type}</span>
+              )}
               {r.refusal
                 ? <span style={{ fontFamily:T.sans, fontSize:13, fontWeight:800, color:T.red }}>REFUSAL 60+</span>
                 : <span style={{ fontFamily:T.sans, fontSize:18, fontWeight:800, color:T.blue }}>N = {r.nValue}</span>
@@ -2262,8 +2271,9 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
 function SPTModule({ activeJob, showToast, syncTick }) {
   const [sptTab,    setSptTab]    = useState("setup");
   const [topDepth,  setTopDepth]  = useState("1.50");
+  const [sptType,   setSptType]   = useState("S");
   const [testState, setTestState] = useState({ top:"1.50", blows:[], penetration:[],
-    currentIncr:0, refusal:false, refusalIncr:null, complete:false });
+    currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:"S" });
   const [records,   setRecords]   = useState([]);
 
   const loadRecords = useCallback(async () => {
@@ -2278,7 +2288,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
 
   const startTest = () => {
     setTestState({ top:topDepth, blows:[], penetration:[],
-      currentIncr:0, refusal:false, refusalIncr:null, complete:false });
+      currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:sptType });
     setSptTab("test");
   };
 
@@ -2291,6 +2301,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
     const record = {
       id:`spt_${Date.now()}`, GEO_ID:uuid(),
       PROJ_ID:activeJob.PROJ_ID, POINT_ID:activeJob.POINT_ID,
+      Type:s.Type || sptType,
       top:s.top, Base:parseFloat(s.top)+totalPen/1000,
       nValue, refusal:s.refusal?1:0, refusalIncr:s.refusalIncr,
       blows:s.blows, penetration:s.penetration,
@@ -2309,7 +2320,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
     const nextTop = (parseFloat(s.top)+1.5).toFixed(2);
     setTopDepth(nextTop);
     setTestState({ top:nextTop, blows:[], penetration:[],
-      currentIncr:0, refusal:false, refusalIncr:null, complete:false });
+      currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:sptType });
     setSptTab("setup");
     showToast(`Saved - N=${nValue??`REFUSAL`}`);
   };
@@ -2343,6 +2354,38 @@ function SPTModule({ activeJob, showToast, syncTick }) {
 
       {sptTab==="setup"&&(
         <div style={{ flex:1,overflowY:"auto",paddingBottom:24 }}>
+          <SectionLabel>Sampler Type</SectionLabel>
+          <Card>
+            <CardSection last>
+              <div style={{ display:"grid",gridTemplateColumns:"1fr 1fr",gap:8 }}>
+                {SPT_TYPES.map(type => {
+                  const selected = sptType === type.value;
+                  return (
+                    <button key={type.value} onClick={()=>setSptType(type.value)}
+                      style={{ padding:"13px 10px",borderRadius:10,
+                        border:`2px solid ${selected ? T.blue : T.border}`,
+                        background:selected ? T.blue : T.surface2,
+                        color:selected ? T.white : T.text,
+                        fontFamily:T.sans,cursor:"pointer",textAlign:"left",
+                        WebkitTapHighlightColor:"transparent" }}>
+                      <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:3 }}>
+                        <span style={{ width:26,height:26,borderRadius:"50%",
+                          display:"inline-flex",alignItems:"center",justifyContent:"center",
+                          background:selected ? "rgba(255,255,255,0.18)" : T.white,
+                          border:`1px solid ${selected ? "rgba(255,255,255,0.4)" : T.border}`,
+                          fontWeight:800 }}>{type.value}</span>
+                        <span style={{ fontSize:15,fontWeight:800 }}>{type.label}</span>
+                      </div>
+                      <div style={{ fontSize:11,lineHeight:1.35,
+                        color:selected ? "rgba(255,255,255,0.78)" : T.dim }}>
+                        {type.detail}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </CardSection>
+          </Card>
           <SectionLabel>Test Depth</SectionLabel>
           <Card>
             <CardSection last>

@@ -2,6 +2,32 @@
 
 Last updated: 2026-06-23
 
+## Source Of Truth
+
+The workbook below is the current source of truth for CORE-GS database structure:
+
+```text
+C:\Users\SeanTempleton\OneDrive - McMillan Drilling Ltd\Work\Coding\coregs_tables.xlsx
+```
+
+Before adding or changing any CORE-GS read/write path, check this workbook for exact table names, column names, nullability, indexes, foreign keys, and lookup structures. Do not rely on memory when schema details matter.
+
+The workbook contains:
+
+- `coregs_tables`
+- `coregs_columns`
+- `coregs_foreignkeys`
+- `coregs_indexes`
+- `coregs_lookups`
+
+Recent observed workbook shape:
+
+- 136 table rows including header
+- 1,463 column rows including header
+- 357 foreign-key rows including header
+- 592 index rows including header
+- 133,142 lookup rows including header
+
 ## Current Decision
 
 SubStrata Field should not be rebuilt from scratch.
@@ -14,14 +40,14 @@ The existing app shell is still useful:
 - IndexedDB local cache and pending-sync pattern
 - Existing field-entry screens
 - Node API bridge
-- Postgres database for app-owned auth/cache/queue data
+- Postgres database for app-owned auth, sessions, audit, cache, and queue data
 - MSSQL connection to CORE-GS
 
-The part that needs to change is the data model underneath the app. The early seed data was useful for prototyping, but it contains assumptions that conflict with the real CORE-GS schema and lookup values. Going forward, CORE-GS is the source of truth for projects, points, lookup values, and production field records.
+CORE-GS is the source of truth for projects, points, lookup values, and production field records. Postgres and IndexedDB are support layers, not competing databases for CORE-GS business data.
 
 ## Architecture Direction
 
-The mobile app should not talk to SQL Server directly.
+The mobile app must not talk to SQL Server directly.
 
 The intended flow is:
 
@@ -37,7 +63,14 @@ SubStrata Field API
   -> Postgres for app auth, sessions, sync queue/cache, and audit data
 ```
 
-CORE-GS remains authoritative. Postgres and IndexedDB are support layers, not competing source-of-truth databases for CORE-GS business data.
+Postgres is still needed, but its job should stay narrow:
+
+- App users, auth accounts, sessions, and audit events
+- Pending sync queue and replay state
+- App-owned cache needed for offline resume
+- Error state and retry metadata
+
+Postgres should not become the source of truth for `PROJECT`, `POINT`, `GEOLOGY`, or other CORE-GS business tables.
 
 ## Current CORE-GS Connection
 
@@ -54,7 +87,7 @@ Known CORE-GS configuration:
 
 Do not commit the SQL password to the repo. It should live only in deployment environment variables.
 
-The API health response confirmed:
+The API health response previously confirmed:
 
 - CORE-GS bridge enabled
 - CORE-GS configured
@@ -63,22 +96,155 @@ The API health response confirmed:
 - Database is `CORE-GS-TEST`
 - Server is `DRILLING-PC08\SQLSTANDARD2019`
 
-## Important Current Code State
+## Current Build State
 
-The app has already started pivoting to CORE-GS:
+### Phase 1 - CORE-GS Reads
+
+Phase 1 is effectively complete.
 
 - `/api/projects` reads from `dbo.PROJECT` when CORE-GS is enabled.
 - `/api/points?proj_id=...` reads from `dbo.POINT` when CORE-GS is enabled.
-- `/api/lookups/hole-types` reads from `dbo.LUT_HoleType`.
-- Jobs tab button now says `Refresh from CORE-GS`.
-- The obsolete UI card for pushing seeded projects/points to CORE-GS was removed.
-- Explicit hole-type remapping such as `BH -> RC` was removed.
-- New point type choices are loaded from CORE-GS lookup values.
-- Service worker cache was bumped to `substrata-v17`.
+- Reads are scoped by `CLNT_ID = Geotechnical`.
+- The Jobs tab refresh action is `Refresh from CORE-GS`.
+- The obsolete seeded-project push UI was removed.
+- API routes are not cached by the service worker.
+- Seed/demo data remains only as explicit local fallback, not the production source of truth.
 
-There are also protected schema-discovery endpoints:
+### Phase 2 - POINT Create/Sync
+
+Phase 2 has started and the first pass is implemented.
+
+Current state:
+
+- New point creation uses live CORE-GS lookup values.
+- `/api/lookups/point-fields` returns point form lookups:
+  - `LUT_HoleType`
+  - `LUT_HoleStatus`
+  - `Rig`
+  - `DrillerLookup`
+  - `Grids`
+- `Rig`, `DrillerLookup`, and `Grids` lookup reads are scoped by `CLNT_ID`.
+- New point form supports:
+  - `POINT_ID`
+  - `Type`
+  - `HoleDepth`
+  - `Location`
+  - `Remarks`
+  - `Status`
+  - `Rig`
+  - `DrillerLookup`
+  - `Grid`
+- `/api/sync/points` writes pending point edits through to CORE-GS when enabled.
+- POINT upsert validates lookup values before write instead of silently remapping or nulling invalid values.
+- The lingering fallback that treated missing point type as `BH` was removed.
+
+Important limitation:
+
+- Full point editing of existing CORE-GS points is not yet complete as a separate edit screen/workflow. Current work is focused on new point creation and sync.
+
+### Phase 3 - GEOLOGY Write
+
+Phase 3 has started with the Geology module.
+
+Current state:
+
+- Existing Geology UI still builds rich NZGS soil/rock descriptions.
+- Saved geology records remain offline-capable through IndexedDB.
+- Pending geology records sync through `/api/sync/records`.
+- When CORE-GS is enabled, geology records are upserted into `dbo.GEOLOGY`.
+- Existing CORE-GS geology rows are read back into app history through `/api/sync/records?proj_id=...&point_id=...`.
+
+Current `dbo.GEOLOGY` write columns:
+
+- `CLNT_ID`
+- `PROJ_ID`
+- `POINT_ID`
+- `TOP`
+- `BASE`
+- `Description`
+- `Remarks`
+- `MoistureCondition`
+
+Current `dbo.GEOLOGY` read columns:
+
+- `PROJ_ID`
+- `POINT_ID`
+- `TOP`
+- `BASE`
+- `Description`
+- `Remarks`
+- `MoistureCondition`
+- `Legend`
+
+Current Geology rules:
+
+- Natural key is `CLNT_ID, PROJ_ID, POINT_ID, TOP, BASE`.
+- `GEO_ID` is not supplied by the app.
+- `rts` is not read or written.
+- `dbo.GEOLOGY` does not have `_timestamp`; do not reference it.
+- SQL aliases should avoid reserved words such as `top`; use safe aliases such as `top_depth` and `base_depth`.
+- Geology write validates the target `POINT` exists in CORE-GS first.
+- Deleting geology is still local-only. Synced CORE-GS rows will reappear when records are hydrated.
+
+Moisture behavior:
+
+- The existing UI moisture selector is preserved, including range selection.
+- Saved soil geology records carry `MoistureCondition` from the current moisture selector.
+- Server resolves that text against `dbo.LUT_MoistureType` using:
+  - `TypeID`
+  - `Code`
+  - `Description`
+- If the selection is a single value such as `moist`, it should populate if CORE-GS has a matching lookup.
+- If the selection is a range such as `dry to moist`, it only populates `MoistureCondition` if CORE-GS has that exact lookup. Otherwise the range remains in `Description`, and `MoistureCondition` is left `NULL`.
+
+### Phase 3 - SPT Write
+
+SPT sync has also started.
+
+Current state:
+
+- Existing SPT UI still records six 75 mm increments, seating/test blows, refusal state, total penetration, and calculated N value.
+- SPT setup now requires sampler type:
+  - `S`: Raymond Split Spoon
+  - `C`: Solid Cone
+- Saved SPT records remain offline-capable through IndexedDB.
+- Pending SPT records sync through `/api/sync/records`.
+- When CORE-GS is enabled, SPT records are upserted into `dbo.SPT`.
+- Existing CORE-GS SPT rows are read back into app history through `/api/sync/records?proj_id=...&point_id=...`.
+
+Current `dbo.SPT` write columns:
+
+- `CLNT_ID`
+- `PROJ_ID`
+- `POINT_ID`
+- `Type`
+- `TOP`
+- `Base`
+- `NValue`
+- `Blow1` through `Blow6`
+- `Incr1` through `Incr6`
+- `TotalBlowCount`
+- `TotalPenetration`
+- `Standard`
+- `Remarks`
+
+Current SPT rules:
+
+- Natural key is `CLNT_ID, PROJ_ID, POINT_ID, TOP`.
+- `GEO_ID` is not supplied by the app.
+- `rts` is not read or written.
+- `Type` is selected in the SPT setup UI and validated against `dbo.LUT_SptType.Value`.
+- SQL aliases should avoid reserved words such as `top`; use safe aliases such as `top_depth`.
+- SPT write validates the target `POINT` exists in CORE-GS first.
+- Deleting SPT is still local-only. Synced CORE-GS rows will reappear when records are hydrated.
+
+## Protected CORE-GS Inspection Endpoints
+
+These endpoints are authenticated-only:
 
 ```text
+GET /api/core-gs/status
+POST /api/core-gs/test-connection
 GET /api/core-gs/schema/tables
 GET /api/core-gs/schema/tables?search=POINT
 GET /api/core-gs/schema/table?schema=dbo&table=POINT
@@ -87,34 +253,7 @@ GET /api/core-gs/lookups
 GET /api/core-gs/lookup-values?schema=dbo&table=LUT_HoleType
 ```
 
-These endpoints are for authenticated users only.
-
-## Workbook Evidence
-
-The file below contains live SSMS exports from CORE-GS:
-
-```text
-C:\Users\SeanTempleton\OneDrive - McMillan Drilling Ltd\Work\Coding\coregs_tables.xlsx
-```
-
-It contains five sheets:
-
-- `coregs_tables`
-- `coregs_columns`
-- `coregs_foreignkeys`
-- `coregs_indexes`
-- `coregs_lookups`
-
-Observed counts:
-
-- 135 tables
-- 1,462 columns
-- 356 foreign-key rows
-- 591 index rows
-- 133,141 lookup/value rows
-- 41 lookup-like tables
-
-This workbook is the best current snapshot for planning app behavior.
+These are useful for inspection and debugging. Production writes should still be explicit and table-specific.
 
 ## Critical CORE-GS Rules
 
@@ -126,7 +265,7 @@ Always scope CORE-GS reads and writes by:
 CLNT_ID = Geotechnical
 ```
 
-This is not optional.
+This is not optional where the target table has `CLNT_ID`.
 
 ### Primary Key Pattern
 
@@ -138,7 +277,7 @@ GEO_ID uniqueidentifier default newid()
 
 as the physical primary key.
 
-The app should normally not generate or depend on `GEO_ID` for idempotent writes unless there is a specific reason. Use the table's natural unique keys for upsert behavior.
+The app should normally not generate or depend on `GEO_ID` for idempotent writes. Use each table's natural unique key for upsert behavior.
 
 ### Rowversion
 
@@ -148,25 +287,25 @@ Many tables contain:
 rts timestamp
 ```
 
-This is SQL Server `timestamp` / `rowversion`. The app should not insert or update `rts`. SQL Server generates it.
+This is SQL Server `timestamp` / `rowversion`. The app must not insert or update `rts`. SQL Server generates it.
 
 If a required-column scan says `rts` is required, ignore that for app input design.
 
-### Lookup and Foreign Key Values
+### Lookup And Foreign Key Values
 
 Do not invent lookup values.
 
-If a field is backed by a lookup or FK table, the UI should read the valid values from CORE-GS and submit the actual lookup code. Avoid hardcoded mappings unless they are documented business rules.
+If a field is backed by a lookup or FK table, the UI should read valid values from CORE-GS and submit the actual lookup code. Avoid hardcoded mappings unless they are documented business rules.
 
 Example failure already seen:
 
 - App tried to write `POINT.Type = BH`.
 - CORE-GS rejected it because `BH` is not in `dbo.LUT_HoleType.VALUE`.
-- Correct fix is not to map blindly. Correct fix is to make the UI use real `LUT_HoleType` values.
+- Correct fix is not blind remapping. Correct fix is to make the UI use real `LUT_HoleType` values.
 
-## Natural Keys and Major Tables
+## Natural Keys And Major Tables
 
-Use these keys for idempotent read/update behavior.
+Use these keys for idempotent read/update behavior. Confirm against `coregs_tables.xlsx` before implementation.
 
 ### PROJECT
 
@@ -187,12 +326,7 @@ Important columns:
 - `Client`
 - `Engineer`
 
-Foreign keys:
-
-- `CLNT_ID -> _clnt.CLNT_ID`
-- `CLNT_ID, Client -> Clients.CLNT_ID, Clients.CLIENT_ID`
-
-Important caution:
+Important cautions:
 
 - `PROJECT.Client` must match an existing `Clients.CLIENT_ID` for the same `CLNT_ID`.
 
@@ -206,7 +340,7 @@ Natural unique key:
 CLNT_ID, PROJ_ID, POINT_ID
 ```
 
-Important columns:
+Current implemented write fields include:
 
 - `CLNT_ID`
 - `PROJ_ID`
@@ -215,12 +349,10 @@ Important columns:
 - `HoleDepth`
 - `Location`
 - `Remarks`
-- `StartDate`
-- `EndDate`
-- `LoggedBy`
-- `Driller`
-- `Rig`
 - `Status`
+- `Rig`
+- `DrillerLookup`
+- `Grid`
 
 Important foreign keys:
 
@@ -244,20 +376,29 @@ Natural unique key:
 CLNT_ID, PROJ_ID, POINT_ID, TOP, BASE
 ```
 
-Important required app fields:
+Workbook-confirmed columns used by current code:
 
 - `CLNT_ID`
 - `PROJ_ID`
 - `POINT_ID`
+- `Type`
 - `TOP`
 - `BASE`
+- `Description`
+- `Remarks`
+- `MoistureCondition`
+- `Legend`
 
-Important lookup/FK fields include:
+Important lookup/FK fields:
 
 - `Legend -> GPHX_Geological.Value`
 - `ConsistencyDensity -> LUT_ConsistencyDensityType.TypeID`
 - `MoistureCondition -> LUT_MoistureType.TypeID`
 - `SoilClassification -> LUT_USCType.TypeID`
+
+Important caution:
+
+- `dbo.GEOLOGY` has `rts`, not `_timestamp`.
 
 ### SPT
 
@@ -272,6 +413,21 @@ CLNT_ID, PROJ_ID, POINT_ID, TOP
 Important lookup:
 
 - `Type -> LUT_SptType.Value`
+
+Current implemented write fields:
+
+- `CLNT_ID`
+- `PROJ_ID`
+- `POINT_ID`
+- `TOP`
+- `Base`
+- `NValue`
+- `Blow1` through `Blow6`
+- `Incr1` through `Incr6`
+- `TotalBlowCount`
+- `TotalPenetration`
+- `Standard`
+- `Remarks`
 
 ### Core
 
@@ -383,6 +539,7 @@ Important lookup-like tables:
 
 - `LUT_HoleType`
 - `LUT_HoleStatus`
+- `LUT_MoistureType`
 - `LUT_SptType`
 - `LUT_CoreDrivability`
 - `LUT_InstallationType`
@@ -397,74 +554,32 @@ Important lookup-like tables:
 - `Grids`
 - `Diameter`
 
+Lookup table column names vary. Do not assume every lookup table has `VALUE`.
+
 Examples:
 
-`LUT_HoleType` contains values such as:
+- `LUT_HoleType` uses `VALUE`.
+- `LUT_HoleStatus` uses `VALUE`.
+- `Rig`, `DrillerLookup`, and `Grids` use `VALUE` and have `CLNT_ID`.
+- `LUT_MoistureType` uses `TypeID`, `Description`, `Code`, and `ID`.
+- `GPHX_Geological` uses `Value`, not `VALUE`.
 
-- `RC`: Rotary cored
-- `RO`: Rotary open hole
-- `CP`: Cable percussion
-- `SCP`: Static cone penetrometer
-- `TP`: Trial pit/trench
-- `WS`: Window sampler
-- `HA`: Hand auger
+## Remaining Build Plan
 
-`LUT_SptType` contains:
+### Finish Phase 2 - POINT Editing
 
-- `C`: Solid 60 degree cone
-- `S`: Raymond Split Spoon
+Needed:
 
-`GPHX_Backfill` contains:
+- Add explicit edit workflow for existing CORE-GS `POINT` rows.
+- Decide which optional fields the field team should own first.
+- Keep validation against CORE-GS lookup/FK tables.
 
-- `CEMENT`
-- `FSAND`
-- `TOPSOIL`
-- `BENTONITE`
-- `ARISINGS`
-- `SAND`
-- `BSAND`
-- `ASPHALT`
-- `GROUT`
-- `GRAVEL`
-- `!CONC`
-- `COLLAPSE`
-
-## Recommended Build Plan
-
-### Phase 1 - Stabilize CORE-GS Reads
-
-Goal:
-
-- Make project and point selection fully CORE-GS-backed.
-
-Tasks:
-
-- Keep `/api/projects` reading `PROJECT`.
-- Keep `/api/points` reading `POINT`.
-- Add generic lookup endpoint usage in the frontend.
-- Remove production reliance on `api-data.json` seed project/point data.
-- Keep sample data only as local demo fallback if explicitly needed.
-
-### Phase 2 - Point Editing
-
-Goal:
-
-- Let users create or edit `POINT` rows using real CORE-GS constraints.
-
-Tasks:
-
-- Use `LUT_HoleType` for `POINT.Type`.
-- Use `LUT_HoleStatus` for `POINT.Status`.
-- Use `Rig`, `DrillerLookup`, `Grids`, and relevant lookup tables for constrained fields.
-- Write through API to CORE-GS.
-- Store pending offline point edits in IndexedDB and Postgres queue.
-
-### Phase 3 - Module-by-Module Writes
+### Continue Phase 3 - Module Writes
 
 Convert one module at a time:
 
-- Geology -> `GEOLOGY`
-- SPT -> `SPT`
+- Geology -> `GEOLOGY` is started.
+- SPT -> `SPT` is started.
 - Core -> `Core`
 - Backfill -> `Backfill`
 - Water -> `Water`
@@ -476,14 +591,15 @@ Each module should:
 - Read existing CORE-GS rows for the active project/point.
 - Use live lookup values.
 - Validate natural keys before write.
-- Upsert by the natural unique key.
+- Upsert by natural unique key.
 - Avoid touching fields the app does not own yet.
+- Check `coregs_tables.xlsx` before implementation.
 
 ### Phase 4 - Offline Queue
 
 Goal:
 
-- Offline use remains possible, but without making Postgres a competing CORE-GS clone.
+- Offline use remains possible without making Postgres a competing CORE-GS clone.
 
 Pattern:
 
@@ -494,13 +610,14 @@ Pattern:
 
 ## Do Not Forget
 
+- Check `coregs_tables.xlsx` before schema-sensitive changes.
 - Do not hardcode seed-data assumptions into production behavior.
 - Do not invent lookup values.
 - Do not write `rts`.
+- Do not reference columns unless verified for that specific table.
 - Do not expose SQL Server credentials to the browser.
 - Do not treat Postgres as the source of truth for CORE-GS business tables.
 - Always scope with `CLNT_ID = Geotechnical`.
 - Preserve exact CORE-GS table and column names, including odd spelling.
 - Prefer small, table-specific API functions over one giant generic writer.
 - Generic schema discovery is useful for inspection, but production writes should be explicit and constrained.
-

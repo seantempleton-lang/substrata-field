@@ -1240,6 +1240,7 @@ function normalizeGeologyRecord(record) {
     id: nullableText(record.id) || `geo_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     PROJ_ID: nullableText(record.PROJ_ID),
     POINT_ID: nullableText(record.POINT_ID),
+    Type: nullableText(record.Type),
     top,
     base,
     description: nullableText(record.Description ?? record.description),
@@ -1419,6 +1420,246 @@ async function getCoreGsGeologyRecords(projId, pointId) {
       source: "core-gs",
     },
   }));
+}
+
+function normalizeSptRecord(record) {
+  const top = nullableNumber(record.TOP ?? record.top);
+  return {
+    id: nullableText(record.id) || `spt_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    PROJ_ID: nullableText(record.PROJ_ID),
+    POINT_ID: nullableText(record.POINT_ID),
+    top,
+    Base: nullableNumber(record.Base ?? record.base),
+    nValue: nullableNumber(record.NValue ?? record.nValue),
+    Blow1: nullableNumber(record.Blow1),
+    Blow2: nullableNumber(record.Blow2),
+    Blow3: nullableNumber(record.Blow3),
+    Blow4: nullableNumber(record.Blow4),
+    Blow5: nullableNumber(record.Blow5),
+    Blow6: nullableNumber(record.Blow6),
+    Incr1: nullableNumber(record.Incr1),
+    Incr2: nullableNumber(record.Incr2),
+    Incr3: nullableNumber(record.Incr3),
+    Incr4: nullableNumber(record.Incr4),
+    Incr5: nullableNumber(record.Incr5),
+    Incr6: nullableNumber(record.Incr6),
+    TotalBlowCount: nullableNumber(record.TotalBlowCount),
+    TotalPenetration: nullableNumber(record.TotalPenetration),
+    Standard: nullableText(record.Standard),
+    Remarks: nullableText(record.Remarks ?? record.remarks),
+    created_at: nullableText(record.created_at) || new Date().toISOString(),
+  };
+}
+
+async function validateCoreGsSpt(transaction, spt) {
+  const sql = require("mssql");
+  if (!spt.PROJ_ID || !spt.POINT_ID) throw createHttpError(400, "PROJ_ID and POINT_ID are required");
+  if (spt.top === null) throw createHttpError(400, "SPT TOP is required");
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), spt.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), spt.POINT_ID)
+    .input("Type", sql.NVarChar(2), spt.Type)
+    .query(`
+      SELECT
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM dbo.POINT
+          WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID
+        ) THEN 1 ELSE 0 END AS point_found,
+        CASE WHEN @Type IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.LUT_SptType WHERE Value = @Type
+        ) THEN 1 ELSE 0 END AS type_found;
+    `);
+
+  if (!result.recordset?.[0]?.point_found) {
+    throw createHttpError(400, `Point ${spt.PROJ_ID}/${spt.POINT_ID} does not exist in CORE-GS`);
+  }
+  if (!result.recordset?.[0]?.type_found) {
+    throw createHttpError(400, `Invalid SPT.Type lookup value: ${spt.Type}`);
+  }
+}
+
+async function upsertCoreGsSpt(transaction, record) {
+  const sql = require("mssql");
+  const spt = normalizeSptRecord(record);
+  await validateCoreGsSpt(transaction, spt);
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), spt.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), spt.POINT_ID)
+    .input("Type", sql.NVarChar(2), spt.Type)
+    .input("TOP", sql.Decimal(5, 2), spt.top)
+    .input("Base", sql.Decimal(15, 6), spt.Base)
+    .input("NValue", sql.Int, spt.nValue)
+    .input("Blow1", sql.Int, spt.Blow1)
+    .input("Blow2", sql.Int, spt.Blow2)
+    .input("Blow3", sql.Int, spt.Blow3)
+    .input("Blow4", sql.Int, spt.Blow4)
+    .input("Blow5", sql.Int, spt.Blow5)
+    .input("Blow6", sql.Int, spt.Blow6)
+    .input("Incr1", sql.Decimal(3, 0), spt.Incr1)
+    .input("Incr2", sql.Decimal(3, 0), spt.Incr2)
+    .input("Incr3", sql.Decimal(3, 0), spt.Incr3)
+    .input("Incr4", sql.Decimal(3, 0), spt.Incr4)
+    .input("Incr5", sql.Decimal(3, 0), spt.Incr5)
+    .input("Incr6", sql.Decimal(3, 0), spt.Incr6)
+    .input("TotalBlowCount", sql.Int, spt.TotalBlowCount)
+    .input("TotalPenetration", sql.Decimal(8, 0), spt.TotalPenetration)
+    .input("Standard", sql.VarChar(20), spt.Standard)
+    .input("Remarks", sql.VarChar(sql.MAX), spt.Remarks)
+    .query(`
+      IF EXISTS (
+        SELECT 1 FROM dbo.SPT
+        WHERE CLNT_ID = @CLNT_ID
+          AND PROJ_ID = @PROJ_ID
+          AND POINT_ID = @POINT_ID
+          AND [TOP] = @TOP
+      )
+      BEGIN
+        UPDATE dbo.SPT
+        SET Base = @Base,
+            Type = @Type,
+            NValue = @NValue,
+            Blow1 = @Blow1,
+            Blow2 = @Blow2,
+            Blow3 = @Blow3,
+            Blow4 = @Blow4,
+            Blow5 = @Blow5,
+            Blow6 = @Blow6,
+            Incr1 = @Incr1,
+            Incr2 = @Incr2,
+            Incr3 = @Incr3,
+            Incr4 = @Incr4,
+            Incr5 = @Incr5,
+            Incr6 = @Incr6,
+            TotalBlowCount = @TotalBlowCount,
+            TotalPenetration = @TotalPenetration,
+            Standard = @Standard,
+            Remarks = @Remarks
+        WHERE CLNT_ID = @CLNT_ID
+          AND PROJ_ID = @PROJ_ID
+          AND POINT_ID = @POINT_ID
+          AND [TOP] = @TOP;
+        SELECT CAST('update' AS varchar(10)) AS action;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.SPT (
+          CLNT_ID, PROJ_ID, POINT_ID, [TOP], Base, Type, NValue,
+          Blow1, Blow2, Blow3, Blow4, Blow5, Blow6,
+          Incr1, Incr2, Incr3, Incr4, Incr5, Incr6,
+          TotalBlowCount, TotalPenetration, Standard, Remarks
+        )
+        VALUES (
+          @CLNT_ID, @PROJ_ID, @POINT_ID, @TOP, @Base, @Type, @NValue,
+          @Blow1, @Blow2, @Blow3, @Blow4, @Blow5, @Blow6,
+          @Incr1, @Incr2, @Incr3, @Incr4, @Incr5, @Incr6,
+          @TotalBlowCount, @TotalPenetration, @Standard, @Remarks
+        );
+        SELECT CAST('insert' AS varchar(10)) AS action;
+      END
+    `);
+  return result.recordset?.[0]?.action || "unknown";
+}
+
+async function syncCoreGsSpt(records) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig() || !records.length) return null;
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const transaction = new sql.Transaction(pool);
+  const summary = { total: records.length, insert: 0, update: 0 };
+
+  await transaction.begin();
+  try {
+    for (const record of records) {
+      const action = await upsertCoreGsSpt(transaction, record);
+      if (action === "insert") summary.insert += 1;
+      if (action === "update") summary.update += 1;
+    }
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    await transaction.rollback().catch(() => null);
+    throw error;
+  }
+}
+
+async function getCoreGsSptRecords(projId, pointId) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig()) return [];
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), projId)
+    .input("POINT_ID", sql.NVarChar(40), pointId)
+    .query(`
+      SELECT
+        PROJ_ID,
+        POINT_ID,
+        [TOP] AS top_depth,
+        Base AS base_depth,
+        Type,
+        NValue,
+        Blow1, Blow2, Blow3, Blow4, Blow5, Blow6,
+        Incr1, Incr2, Incr3, Incr4, Incr5, Incr6,
+        TotalBlowCount,
+        TotalPenetration,
+        Standard,
+        Remarks
+      FROM dbo.SPT
+      WHERE CLNT_ID = @CLNT_ID
+        AND PROJ_ID = @PROJ_ID
+        AND POINT_ID = @POINT_ID
+      ORDER BY [TOP];
+    `);
+
+  return (result.recordset || []).map(row => {
+    const blows = [row.Blow1, row.Blow2, row.Blow3, row.Blow4, row.Blow5, row.Blow6]
+      .map(value => nullableNumber(value));
+    const penetration = [row.Incr1, row.Incr2, row.Incr3, row.Incr4, row.Incr5, row.Incr6]
+      .map(value => nullableNumber(value) || 75);
+    const nValue = nullableNumber(row.NValue);
+    return {
+      record_type: "spt",
+      record: {
+        id: `spt_coregs_${row.PROJ_ID}_${row.POINT_ID}_${row.top_depth}`,
+        GEO_ID: null,
+        PROJ_ID: nullableText(row.PROJ_ID),
+        POINT_ID: nullableText(row.POINT_ID),
+        Type: nullableText(row.Type),
+        top: nullableNumber(row.top_depth),
+        Base: nullableNumber(row.base_depth),
+        nValue,
+        refusal: nValue === null ? 1 : 0,
+        blows,
+        penetration,
+        Blow1: nullableNumber(row.Blow1),
+        Blow2: nullableNumber(row.Blow2),
+        Blow3: nullableNumber(row.Blow3),
+        Blow4: nullableNumber(row.Blow4),
+        Blow5: nullableNumber(row.Blow5),
+        Blow6: nullableNumber(row.Blow6),
+        Incr1: nullableNumber(row.Incr1),
+        Incr2: nullableNumber(row.Incr2),
+        Incr3: nullableNumber(row.Incr3),
+        Incr4: nullableNumber(row.Incr4),
+        Incr5: nullableNumber(row.Incr5),
+        Incr6: nullableNumber(row.Incr6),
+        TotalBlowCount: nullableNumber(row.TotalBlowCount),
+        TotalPenetration: nullableNumber(row.TotalPenetration),
+        Standard: nullableText(row.Standard),
+        Remarks: nullableText(row.Remarks),
+        created_at: new Date().toISOString(),
+        sync_status: "synced",
+        source: "core-gs",
+      },
+    };
+  });
 }
 
 async function getHealth() {
@@ -1801,6 +2042,7 @@ async function syncRecords(records) {
 
   const client = await db.connect();
   const coreGsGeology = [];
+  const coreGsSpt = [];
   let committed = false;
   try {
     await client.query("BEGIN");
@@ -1834,10 +2076,12 @@ async function syncRecords(records) {
       );
       saved.push(`${recordType}:${record.id}`);
       if (recordType === "geology") coreGsGeology.push(record);
+      if (recordType === "spt") coreGsSpt.push(record);
     }
     await client.query("COMMIT");
     committed = true;
     await syncCoreGsGeology(coreGsGeology);
+    await syncCoreGsSpt(coreGsSpt);
     return saved;
   } catch (error) {
     if (!committed) await client.query("ROLLBACK");
@@ -1849,7 +2093,10 @@ async function syncRecords(records) {
 
 async function getSyncedRecords(projId, pointId) {
   const db = getPool();
-  const coreGsRecords = await getCoreGsGeologyRecords(projId, pointId);
+  const coreGsRecords = [
+    ...(await getCoreGsGeologyRecords(projId, pointId)),
+    ...(await getCoreGsSptRecords(projId, pointId)),
+  ];
   if (!db) return coreGsRecords;
 
   const result = await db.query(
@@ -1865,10 +2112,10 @@ async function getSyncedRecords(projId, pointId) {
     record: { ...row.payload, sync_status: "synced" },
   }));
   const seen = new Set(postgresRecords.map(item =>
-    `${item.record_type}:${item.record.PROJ_ID}:${item.record.POINT_ID}:${item.record.top}:${item.record.base}`
+    `${item.record_type}:${item.record.PROJ_ID}:${item.record.POINT_ID}:${item.record.top}:${item.record.base || ""}`
   ));
   const mergedCoreGsRecords = coreGsRecords.filter(item =>
-    !seen.has(`${item.record_type}:${item.record.PROJ_ID}:${item.record.POINT_ID}:${item.record.top}:${item.record.base}`)
+    !seen.has(`${item.record_type}:${item.record.PROJ_ID}:${item.record.POINT_ID}:${item.record.top}:${item.record.base || ""}`)
   );
   return [...postgresRecords, ...mergedCoreGsRecords];
 }
