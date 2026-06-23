@@ -1519,7 +1519,6 @@ async function upsertCoreGsSpt(transaction, record) {
     .input("Incr5", sql.Decimal(3, 0), spt.Incr5)
     .input("Incr6", sql.Decimal(3, 0), spt.Incr6)
     .input("TotalBlowCount", sql.Int, spt.TotalBlowCount)
-    .input("TotalPenetration", sql.Decimal(8, 0), spt.TotalPenetration)
     .input("Standard", sql.VarChar(20), spt.Standard)
     .input("Remarks", sql.VarChar(sql.MAX), spt.Remarks)
     .query(`
@@ -1548,7 +1547,6 @@ async function upsertCoreGsSpt(transaction, record) {
             Incr5 = @Incr5,
             Incr6 = @Incr6,
             TotalBlowCount = @TotalBlowCount,
-            TotalPenetration = @TotalPenetration,
             Standard = @Standard,
             Remarks = @Remarks
         WHERE CLNT_ID = @CLNT_ID
@@ -1563,13 +1561,13 @@ async function upsertCoreGsSpt(transaction, record) {
           CLNT_ID, PROJ_ID, POINT_ID, [TOP], Base, Type, NValue,
           Blow1, Blow2, Blow3, Blow4, Blow5, Blow6,
           Incr1, Incr2, Incr3, Incr4, Incr5, Incr6,
-          TotalBlowCount, TotalPenetration, Standard, Remarks
+          TotalBlowCount, Standard, Remarks
         )
         VALUES (
           @CLNT_ID, @PROJ_ID, @POINT_ID, @TOP, @Base, @Type, @NValue,
           @Blow1, @Blow2, @Blow3, @Blow4, @Blow5, @Blow6,
           @Incr1, @Incr2, @Incr3, @Incr4, @Incr5, @Incr6,
-          @TotalBlowCount, @TotalPenetration, @Standard, @Remarks
+          @TotalBlowCount, @Standard, @Remarks
         );
         SELECT CAST('insert' AS varchar(10)) AS action;
       END

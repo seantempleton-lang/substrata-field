@@ -228,7 +228,6 @@ Current `dbo.SPT` write columns:
 - `Blow1` through `Blow6`
 - `Incr1` through `Incr6`
 - `TotalBlowCount`
-- `TotalPenetration`
 - `Standard`
 - `Remarks`
 
@@ -237,6 +236,7 @@ Current SPT rules:
 - Natural key is `CLNT_ID, PROJ_ID, POINT_ID, TOP`.
 - `GEO_ID` is not supplied by the app.
 - `rts` is not read or written.
+- `TotalPenetration` can be read but must not be inserted or updated; CORE-GS reports it as a computed column.
 - `Type` is selected in the SPT setup UI and validated against `dbo.LUT_SptType.Value`.
 - SQL aliases should avoid reserved words such as `top`; use safe aliases such as `top_depth`.
 - SPT write validates the target `POINT` exists in CORE-GS first.
