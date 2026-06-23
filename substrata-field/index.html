@@ -84,13 +84,13 @@ const T = {
 
 // Module config - drives tab bar and routing
 const MODULES = [
-  { id:"jobs",   label:"Jobs",   icon:"briefcase", color: T.amber  },
+  { id:"jobs",   label:"Project",icon:"briefcase", color: T.amber  },
   { id:"geo",    label:"Geo",    icon:"layers",    color: T.accent },
   { id:"spt",    label:"SPT",    icon:"activity",  color: T.blue   },
   { id:"core",   label:"Core",   icon:"disc",      color: T.rock   },
-  { id:"photos", label:"Photos", icon:"camera",    color: T.teal   },
-  { id:"notes",  label:"Cons.",  icon:"package",   color: "#f59e0b"},
   { id:"install",label:"Install",icon:"tool",      color: "#10b981"},
+  { id:"notes",  label:"Cons.",  icon:"package",   color: "#f59e0b"},
+  { id:"photos", label:"Photos", icon:"camera",    color: T.teal   },
 ];
 const DEFAULT_API_BASE = window.location.protocol.startsWith("http")
   ? `${window.location.origin}/api`
@@ -1978,6 +1978,7 @@ function GeoModule({ activeJob, showToast, syncTick }) {
 // =======================================================================
 
 const SPT_CFG = { incrMm:75, seatCount:2, total:6, hardLimit:60, colour:T.blue };
+const SPT_SPOON_RECOVERY_MM = 450;
 const SPT_TYPES = [
   { value:"S", label:"Spoon", detail:"Raymond Split Spoon" },
   { value:"C", label:"Cone", detail:"Solid Cone" },
@@ -2037,6 +2038,19 @@ function SPTHistoryScreen({ records, onDelete }) {
                   </div>
                 );
               })}
+              {r.Type === "S" && r.SampleRecoveryMm != null && (
+                <div style={{ marginLeft:"auto", minWidth:92 }}>
+                  <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
+                    color:T.dim, marginBottom:2 }}>RECOVERY</div>
+                  <div style={{ fontFamily:T.sans, fontSize:15, fontWeight:800,
+                    color:T.text }}>
+                    {r.SampleRecoveryMm}mm
+                  </div>
+                  <div style={{ fontFamily:T.sans, fontSize:10, color:T.dim }}>
+                    {r.SampleRecoveryPct}%
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -2167,6 +2181,18 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
   const blowColor   = ratio>=0.83?T.red:ratio>=0.67?T.amber:T.text;
   const barColor    = ratio>=0.83?T.red:ratio>=0.5?T.amber:T.blue;
   const isFinished  = s.complete||s.refusal;
+  const isSpoon     = (s.Type || "S") === "S";
+  const recoveryRaw = s.SampleRecoveryMm ?? "";
+  const recoveryMm  = parseFloat(recoveryRaw);
+  const recoveryValid = !isSpoon || (
+    recoveryRaw !== "" &&
+    Number.isFinite(recoveryMm) &&
+    recoveryMm >= 0 &&
+    recoveryMm <= SPT_SPOON_RECOVERY_MM
+  );
+  const recoveryPct = recoveryValid && isSpoon
+    ? Math.round((recoveryMm / SPT_SPOON_RECOVERY_MM) * 100)
+    : null;
   // Show refusal modal when refusal triggered but mm not yet entered
   const showRefusalModal = s.refusal && (s.penetration[s.refusalIncr-1]||75)===75;
 
@@ -2264,11 +2290,45 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
       <div style={{ flexShrink:0,padding:"10px 12px",background:T.white,
         borderTop:`1px solid ${T.border}`,display:"flex",flexDirection:"column",gap:8 }}>
         {isFinished ? (
-          <button onClick={onSave} style={{ width:"100%",padding:16,background:T.blue,
-            color:T.white,border:"none",borderRadius:12,fontFamily:T.sans,
-            fontSize:16,fontWeight:700,cursor:"pointer",
-            boxShadow:`0 4px 12px ${T.blue}44`,
-            WebkitTapHighlightColor:"transparent" }}>Save Test OK</button>
+          <>
+            {isSpoon && (
+              <div style={{ border:`1px solid ${T.border}`,borderRadius:10,
+                padding:"11px 12px",background:T.surface2 }}>
+                <div style={{ display:"flex",alignItems:"flex-end",gap:10 }}>
+                  <div style={{ flex:1,minWidth:0 }}>
+                    <FieldLabel>Sample recovery in spoon (mm)</FieldLabel>
+                    <input type="number" min="0" max={SPT_SPOON_RECOVERY_MM}
+                      inputMode="decimal" value={recoveryRaw}
+                      onChange={e=>setState(prev=>({...prev,SampleRecoveryMm:e.target.value}))}
+                      placeholder="0-450"
+                      style={{ width:"100%",background:T.white,border:`1.5px solid ${T.border2}`,
+                        borderRadius:8,color:T.text,fontFamily:T.sans,
+                        fontSize:22,fontWeight:800,padding:"10px 12px",
+                        outline:"none" }}/>
+                  </div>
+                  <div style={{ width:86,textAlign:"right",paddingBottom:4 }}>
+                    <div style={{ fontFamily:T.sans,fontSize:10,color:T.dim,
+                      letterSpacing:"0.08em" }}>RECOVERY</div>
+                    <div style={{ fontFamily:T.sans,fontSize:22,fontWeight:850,
+                      color:recoveryValid?T.blue:T.dim,lineHeight:1.1 }}>
+                      {recoveryPct == null ? "--" : recoveryPct}%
+                    </div>
+                  </div>
+                </div>
+                <div style={{ fontFamily:T.sans,fontSize:11,color:T.dim,marginTop:6 }}>
+                  {SPT_SPOON_RECOVERY_MM}mm = 100%
+                </div>
+              </div>
+            )}
+            <button onClick={onSave} disabled={!recoveryValid} style={{ width:"100%",padding:16,
+              background:recoveryValid?T.blue:T.border2,
+              color:recoveryValid?T.white:T.dim,border:"none",borderRadius:12,fontFamily:T.sans,
+              fontSize:16,fontWeight:700,cursor:recoveryValid?"pointer":"not-allowed",
+              boxShadow:recoveryValid?`0 4px 12px ${T.blue}44`:"none",
+              WebkitTapHighlightColor:"transparent" }}>
+              {recoveryValid ? "Save Test OK" : "Enter Sample Recovery"}
+            </button>
+          </>
         ) : <>
           {!micMode&&(
             <button onPointerDown={registerBlow} style={{ width:"100%",padding:18,
@@ -2301,7 +2361,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
   const [topDepth,  setTopDepth]  = useState("1.50");
   const [sptType,   setSptType]   = useState("S");
   const [testState, setTestState] = useState({ top:"1.50", blows:[], penetration:[],
-    currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:"S" });
+    currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:"S", SampleRecoveryMm:"" });
   const [records,   setRecords]   = useState([]);
 
   const loadRecords = useCallback(async () => {
@@ -2316,7 +2376,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
 
   const startTest = () => {
     setTestState({ top:topDepth, blows:[], penetration:[],
-      currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:sptType });
+      currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:sptType, SampleRecoveryMm:"" });
     setSptTab("test");
   };
 
@@ -2326,10 +2386,27 @@ function SPTModule({ activeJob, showToast, syncTick }) {
     const testBlows = s.blows.slice(seat);
     const nValue    = s.refusal ? null : testBlows.reduce((a,b)=>a+b,0);
     const totalPen  = s.penetration.reduce((a,b)=>a+b,0);
+    const samplerType = s.Type || sptType;
+    const recoveryMm = samplerType === "S" ? parseFloat(s.SampleRecoveryMm) : null;
+    const sampleRecoveryMm = Number.isFinite(recoveryMm) ? recoveryMm : null;
+    if (samplerType === "S" && (
+      sampleRecoveryMm == null ||
+      sampleRecoveryMm < 0 ||
+      sampleRecoveryMm > SPT_SPOON_RECOVERY_MM
+    )) {
+      showToast(`Enter sample recovery 0-${SPT_SPOON_RECOVERY_MM}mm`);
+      return;
+    }
+    const sampleRecoveryPct = sampleRecoveryMm == null
+      ? null
+      : Math.round((sampleRecoveryMm / SPT_SPOON_RECOVERY_MM) * 100);
+    const recoveryRemark = samplerType === "S" && sampleRecoveryMm != null
+      ? `Sample recovery: ${sampleRecoveryMm}mm (${sampleRecoveryPct}%)`
+      : null;
     const record = {
       id:`spt_${Date.now()}`, GEO_ID:uuid(),
       PROJ_ID:activeJob.PROJ_ID, POINT_ID:activeJob.POINT_ID,
-      Type:s.Type || sptType,
+      Type:samplerType,
       top:s.top, Base:parseFloat(s.top)+totalPen/1000,
       nValue, refusal:s.refusal?1:0, refusalIncr:s.refusalIncr,
       blows:s.blows, penetration:s.penetration,
@@ -2340,7 +2417,8 @@ function SPTModule({ activeJob, showToast, syncTick }) {
       Blow5:s.blows[4]||null, Incr5:s.penetration[4]||75,
       Blow6:s.blows[5]||null, Incr6:s.penetration[5]||75,
       TotalBlowCount:s.blows.reduce((a,b)=>a+b,0),
-      TotalPenetration:totalPen, Standard:"NZS4402",
+      TotalPenetration:totalPen, Standard:"NZS4402", Remarks:recoveryRemark,
+      SampleRecoveryMm:sampleRecoveryMm, SampleRecoveryPct:sampleRecoveryPct,
       created_at:new Date().toISOString(), sync_status:"pending",
     };
     await dbPut("spt",record);
@@ -2348,7 +2426,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
     const nextTop = (parseFloat(s.top)+1.5).toFixed(2);
     setTopDepth(nextTop);
     setTestState({ top:nextTop, blows:[], penetration:[],
-      currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:sptType });
+      currentIncr:0, refusal:false, refusalIncr:null, complete:false, Type:sptType, SampleRecoveryMm:"" });
     setSptTab("setup");
     showToast(`Saved - N=${nValue??`REFUSAL`}`);
   };

@@ -207,6 +207,10 @@ Current state:
 - SPT setup now requires sampler type:
   - `S`: Raymond Split Spoon
   - `C`: Solid Cone
+- Spoon SPT tests now prompt for sample recovery after the test is complete:
+  - `450 mm = 100%`.
+  - Cone SPT tests do not prompt for recovery because no sample is collected.
+  - `dbo.SPT` does not have a dedicated recovery column, so the current implementation stores the structured value in the app record payload and writes a compact `Sample recovery: ...` note into `SPT.Remarks` for CORE-GS continuity.
 - Saved SPT records remain offline-capable through IndexedDB.
 - Pending SPT records sync through `/api/sync/records`.
 - When CORE-GS is enabled, SPT records are upserted into `dbo.SPT`.

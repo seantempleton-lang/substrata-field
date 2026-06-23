@@ -1451,6 +1451,18 @@ function normalizeSptRecord(record) {
   };
 }
 
+function parseSptSampleRecovery(remarks) {
+  const text = nullableText(remarks);
+  if (!text) return { SampleRecoveryMm: null, SampleRecoveryPct: null };
+  const match = text.match(/sample\s+recovery:\s*([0-9]+(?:\.[0-9]+)?)\s*mm(?:\s*\(([0-9]+)%\))?/i);
+  if (!match) return { SampleRecoveryMm: null, SampleRecoveryPct: null };
+  const recoveryMm = nullableNumber(match[1]);
+  const recoveryPct = match[2] != null
+    ? nullableNumber(match[2])
+    : (recoveryMm == null ? null : Math.round((recoveryMm / 450) * 100));
+  return { SampleRecoveryMm: recoveryMm, SampleRecoveryPct: recoveryPct };
+}
+
 async function validateCoreGsSpt(transaction, spt) {
   const sql = require("mssql");
   if (!spt.PROJ_ID || !spt.POINT_ID) throw createHttpError(400, "PROJ_ID and POINT_ID are required");
@@ -1624,6 +1636,8 @@ async function getCoreGsSptRecords(projId, pointId) {
     const penetration = [row.Incr1, row.Incr2, row.Incr3, row.Incr4, row.Incr5, row.Incr6]
       .map(value => nullableNumber(value) || 75);
     const nValue = nullableNumber(row.NValue);
+    const remarks = nullableText(row.Remarks);
+    const sampleRecovery = parseSptSampleRecovery(remarks);
     return {
       record_type: "spt",
       record: {
@@ -1653,7 +1667,8 @@ async function getCoreGsSptRecords(projId, pointId) {
         TotalBlowCount: nullableNumber(row.TotalBlowCount),
         TotalPenetration: nullableNumber(row.TotalPenetration),
         Standard: nullableText(row.Standard),
-        Remarks: nullableText(row.Remarks),
+        Remarks: remarks,
+        ...sampleRecovery,
         created_at: new Date().toISOString(),
         sync_status: "synced",
         source: "core-gs",
