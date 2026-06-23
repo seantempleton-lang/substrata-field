@@ -1814,10 +1814,38 @@ function GeoModule({ activeJob, showToast, syncTick }) {
 
   const handleDelete  = async id => { await dbDelete("geology",id); await loadRecords(); };
   const handleReload  = record => {
-    if (!record.snapshot) { showToast("No snapshot"); return; }
+    const nextTop = parseFloat(record.base||record.top||0).toFixed(2);
+    if (!record.snapshot) {
+      if (record.mode==="rock") {
+        const rockName = record.material || "";
+        setRockState({
+          ...GEO_ROCK_INIT,
+          r_top:nextTop,
+          r_base:"",
+          rockname:ROCK_NAMES_COMMON.some(item => item.v === rockName) ? rockName : null,
+          rockname_custom:ROCK_NAMES_COMMON.some(item => item.v === rockName) ? "" : rockName,
+          r_remarks:record.remarks || record.description || "",
+        });
+        setGeoMode("rock");
+      } else {
+        const major = record.material || "";
+        setSoilState({
+          ...GEO_SOIL_INIT,
+          top:nextTop,
+          base:"",
+          major:MAJOR_SOILS.some(item => item.v === major) ? major : null,
+          moisture:record.MoistureCondition || null,
+          remarks:record.remarks || record.description || "",
+        });
+        setGeoMode("soil");
+      }
+      setGeoTab("entry");
+      if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
+      showToast("Loaded from CORE-GS row");
+      return;
+    }
     try {
       const snap = JSON.parse(record.snapshot);
-      const nextTop = parseFloat(record.base||record.top||0).toFixed(2);
       if (record.mode==="soil") { setSoilState({...snap,top:nextTop,base:""}); setGeoMode("soil"); }
       else { setRockState({...snap,r_top:nextTop,r_base:""}); setGeoMode("rock"); }
       setGeoTab("entry");
@@ -4599,6 +4627,7 @@ function App() {
   const [authStatus,   setAuthStatus]   = useState("checking");
   const [currentUser,  setCurrentUser]  = useState(null);
   const [authError,    setAuthError]    = useState(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [syncState,    setSyncState]    = useState({
     syncing:false,
     lastSyncAt:null,
@@ -4667,12 +4696,14 @@ function App() {
     } catch (err) {}
     setStoredSessionToken("");
     setCurrentUser(null);
+    setUserMenuOpen(false);
     setAuthStatus("unauthenticated");
     setActiveModule("jobs");
   }, []);
 
   const handleAuthExpired = useCallback(() => {
     setCurrentUser(null);
+    setUserMenuOpen(false);
     setStoredSessionToken("");
     setAuthStatus("unauthenticated");
     setAuthError("Your session has expired. Please sign in again.");
@@ -4792,9 +4823,11 @@ function App() {
         flexShrink:0, display:"flex", alignItems:"center", gap:12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
           <div style={{ width:30, height:30, borderRadius:7, background:T.amber,
-            display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
-            <span style={{ fontFamily:T.sans, fontSize:12, fontWeight:900,
-              color:T.nav, letterSpacing:"-0.02em" }}>ST</span>
+            display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0,
+            overflow:"hidden" }}>
+            <img src="favicon.svg" alt="" style={{
+              width:"100%", height:"100%", display:"block",
+            }}/>
           </div>
           <div>
             <div style={{ fontSize:13, fontWeight:800, color:T.white,
@@ -4838,15 +4871,57 @@ function App() {
             fontFamily:T.sans, fontSize:12, fontWeight:700, color:T.amber,
           }}>No job selected</button>
         )}
-        <button onClick={logout} aria-label="Sign out" title={currentUser?.name || "Sign out"} style={{
-          width:34, height:34, borderRadius:8, border:"1px solid rgba(255,255,255,0.12)",
-          background:"rgba(255,255,255,0.06)", color:T.navText,
-          fontFamily:T.sans, fontSize:11, fontWeight:900,
-          display:"flex", alignItems:"center", justifyContent:"center",
-          cursor:"pointer", flexShrink:0, WebkitTapHighlightColor:"transparent",
-        }}>
-          {(currentUser?.initials || currentUser?.name || "U").slice(0,2).toUpperCase()}
-        </button>
+        <div style={{ position:"relative", flexShrink:0 }}>
+          <button
+            onClick={() => setUserMenuOpen(open => !open)}
+            aria-label="User menu"
+            aria-expanded={userMenuOpen}
+            title={currentUser?.name || "User menu"}
+            style={{
+              width:34, height:34, borderRadius:8, border:"1px solid rgba(255,255,255,0.12)",
+              background:userMenuOpen ? "rgba(255,255,255,0.12)" : "rgba(255,255,255,0.06)",
+              color:T.navText,
+              fontFamily:T.sans, fontSize:11, fontWeight:900,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              cursor:"pointer", flexShrink:0, WebkitTapHighlightColor:"transparent",
+            }}>
+            {(currentUser?.initials || currentUser?.name || "U").slice(0,2).toUpperCase()}
+          </button>
+          {userMenuOpen && (
+            <div style={{
+              position:"absolute", right:0, top:"calc(100% + 8px)", width:230,
+              background:T.white, border:`1px solid ${T.border}`, borderRadius:8,
+              boxShadow:"0 16px 36px rgba(0,0,0,0.24)", overflow:"hidden",
+              zIndex:100, color:T.text,
+            }}>
+              <div style={{ padding:"12px 13px", borderBottom:`1px solid ${T.border}` }}>
+                <div style={{ fontFamily:T.sans, fontSize:13, fontWeight:850,
+                  color:T.text, lineHeight:1.25 }}>
+                  {currentUser?.name || "User"}
+                </div>
+                {(currentUser?.roleTitle || currentUser?.appRole || currentUser?.role) && (
+                  <div style={{ fontFamily:T.sans, fontSize:11, fontWeight:700,
+                    color:T.dim, marginTop:3 }}>
+                    {currentUser.roleTitle || currentUser.appRole || currentUser.role}
+                  </div>
+                )}
+                {currentUser?.email && (
+                  <div style={{ fontFamily:T.sans, fontSize:11, color:T.dim,
+                    marginTop:4, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
+                    {currentUser.email}
+                  </div>
+                )}
+              </div>
+              <button onClick={logout} style={{
+                width:"100%", border:0, background:T.white, padding:"11px 13px",
+                textAlign:"left", cursor:"pointer", WebkitTapHighlightColor:"transparent",
+                fontFamily:T.sans, fontSize:13, fontWeight:800, color:T.red,
+              }}>
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ------ MODULE CONTENT ------ */}
