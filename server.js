@@ -1392,8 +1392,7 @@ async function getCoreGsGeologyRecords(projId, pointId) {
         Description AS description,
         Remarks AS remarks,
         MoistureCondition AS MoistureCondition,
-        Legend AS material,
-        _timestamp AS created_at
+        Legend AS material
       FROM dbo.GEOLOGY
       WHERE CLNT_ID = @CLNT_ID
         AND PROJ_ID = @PROJ_ID
@@ -1415,7 +1414,7 @@ async function getCoreGsGeologyRecords(projId, pointId) {
       material: nullableText(row.material),
       remarks: nullableText(row.remarks),
       MoistureCondition: nullableText(row.MoistureCondition),
-      created_at: row.created_at || new Date().toISOString(),
+      created_at: new Date().toISOString(),
       sync_status: "synced",
       source: "core-gs",
     },
