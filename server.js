@@ -8,7 +8,8 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const APP_DIR = path.join(__dirname, "substrata-field");
 const DATA_PATH = process.env.SUBSTRATA_API_DATA || path.join(__dirname, "api-data.json");
-const SHOULD_SEED = String(process.env.SUBSTRATA_SEED_DB || "true").toLowerCase() !== "false";
+const SHOULD_SEED_DEMO_DATA = String(process.env.SUBSTRATA_SEED_DEMO_DATA || "false").toLowerCase() === "true";
+const SHOULD_SEED_AUTH = String(process.env.SUBSTRATA_SEED_AUTH || "true").toLowerCase() !== "false";
 const SESSION_COOKIE_NAME = "substrata_session";
 const SESSION_DURATION_DAYS = 30;
 const APP_ROLE_ORDER = ["FieldUser", "Maintenance", "Supervisor", "Administrator", "SuperUser"];
@@ -427,7 +428,7 @@ async function ensureDatabaseSchema() {
 
 async function seedDatabaseIfNeeded() {
   const db = getPool();
-  if (!db || !SHOULD_SEED) return;
+  if (!db || !SHOULD_SEED_DEMO_DATA) return;
 
   const existing = await db.query("SELECT COUNT(*)::int AS count FROM projects");
   if (existing.rows[0]?.count > 0) return;
@@ -486,7 +487,7 @@ async function seedDatabaseIfNeeded() {
 
 async function seedAuthIfNeeded() {
   const db = getPool();
-  if (!db || !SHOULD_SEED) return;
+  if (!db || !SHOULD_SEED_AUTH) return;
 
   const client = await db.connect();
   try {
@@ -543,6 +544,8 @@ async function seedAuthIfNeeded() {
 }
 
 async function getProjects() {
+  if (CORE_GS_ENABLED && hasCoreGsConfig()) return getCoreGsProjects();
+
   const db = getPool();
   if (!db) return readApiData().projects;
 
@@ -560,6 +563,8 @@ async function getProjects() {
 }
 
 async function getPoints(projId) {
+  if (CORE_GS_ENABLED && hasCoreGsConfig()) return getCoreGsPoints(projId);
+
   const db = getPool();
   if (!db) return readApiData().points?.[projId] || [];
 
@@ -575,6 +580,278 @@ async function getPoints(projId) {
     [projId]
   );
   return result.rows;
+}
+
+async function getCoreGsProjects() {
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .query(`
+      SELECT
+        PROJ_ID AS PROJ_ID,
+        PROJ_NAME AS PROJ_NAME,
+        Location AS Location,
+        Client AS Client,
+        Engineer AS Engineer
+      FROM dbo.PROJECT
+      WHERE CLNT_ID = @CLNT_ID
+      ORDER BY PROJ_ID;
+    `);
+  return result.recordset || [];
+}
+
+async function getCoreGsPoints(projId) {
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), projId)
+    .query(`
+      SELECT
+        POINT_ID AS POINT_ID,
+        Type AS Type,
+        HoleDepth AS HoleDepth,
+        Location AS Location,
+        Remarks AS Remarks,
+        StartDate AS StartDate,
+        EndDate AS EndDate,
+        LoggedBy AS LoggedBy,
+        Driller AS Driller,
+        Rig AS Rig,
+        Status AS Status
+      FROM dbo.POINT
+      WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID
+      ORDER BY COALESCE(Sort, 2147483647), POINT_ID;
+    `);
+  return result.recordset || [];
+}
+
+async function getHoleTypes() {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig()) {
+    return [
+      { VALUE: "RC", Description: "Rotary cored" },
+      { VALUE: "RO", Description: "Rotary open hole" },
+      { VALUE: "CP", Description: "Cable percussion (shell and auger)" },
+      { VALUE: "SCP", Description: "Static cone penetrometer" },
+      { VALUE: "TP", Description: "Trial pit/trench" },
+      { VALUE: "WS", Description: "Window sampler" },
+    ];
+  }
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request().query(`
+    SELECT VALUE AS VALUE, Description AS Description
+    FROM dbo.LUT_HoleType
+    WHERE VALUE IS NOT NULL AND LTRIM(RTRIM(VALUE)) <> ''
+    ORDER BY COALESCE(Sort, 2147483647), VALUE;
+  `);
+  return result.recordset || [];
+}
+
+function normalizeSqlIdentifier(value, fallback = "dbo") {
+  const identifier = String(value || fallback).trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
+    throw createHttpError(400, "Invalid SQL identifier");
+  }
+  return identifier;
+}
+
+function quoteSqlIdentifier(identifier) {
+  return `[${normalizeSqlIdentifier(identifier).replace(/]/g, "]]")}]`;
+}
+
+function parseLimit(value, fallback = 100, max = 500) {
+  const limit = parseInt(value || fallback, 10);
+  if (!Number.isFinite(limit) || limit <= 0) return fallback;
+  return Math.min(limit, max);
+}
+
+async function getCoreGsTables(search = "") {
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request()
+    .input("Search", sql.NVarChar(200), nullableText(search))
+    .query(`
+      SELECT
+        s.name AS schema_name,
+        t.name AS table_name,
+        SUM(CASE WHEN p.index_id IN (0, 1) THEN p.rows ELSE 0 END) AS row_count
+      FROM sys.tables t
+      JOIN sys.schemas s ON s.schema_id = t.schema_id
+      LEFT JOIN sys.partitions p ON p.object_id = t.object_id
+      WHERE @Search IS NULL
+         OR t.name LIKE '%' + @Search + '%'
+         OR s.name LIKE '%' + @Search + '%'
+      GROUP BY s.name, t.name
+      ORDER BY s.name, t.name;
+    `);
+  return result.recordset || [];
+}
+
+async function getCoreGsTableDetails({ schema = "dbo", table, sampleLimit = 0 }) {
+  const sql = require("mssql");
+  const schemaName = normalizeSqlIdentifier(schema);
+  const tableName = normalizeSqlIdentifier(table, "");
+  if (!tableName) throw createHttpError(400, "table is required");
+
+  const pool = await getCoreGsPool();
+  const objectResult = await pool.request()
+    .input("SchemaName", sql.NVarChar(128), schemaName)
+    .input("TableName", sql.NVarChar(128), tableName)
+    .query(`
+      SELECT t.object_id
+      FROM sys.tables t
+      JOIN sys.schemas s ON s.schema_id = t.schema_id
+      WHERE s.name = @SchemaName AND t.name = @TableName;
+    `);
+  const objectId = objectResult.recordset?.[0]?.object_id;
+  if (!objectId) throw createHttpError(404, "CORE-GS table not found");
+
+  const columnsResult = await pool.request()
+    .input("ObjectId", sql.Int, objectId)
+    .query(`
+      SELECT
+        c.column_id,
+        c.name AS column_name,
+        ty.name AS data_type,
+        c.max_length,
+        c.precision,
+        c.scale,
+        c.is_nullable,
+        dc.definition AS default_definition,
+        CASE WHEN pk.column_id IS NULL THEN CAST(0 AS bit) ELSE CAST(1 AS bit) END AS is_primary_key
+      FROM sys.columns c
+      JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+      LEFT JOIN sys.default_constraints dc
+        ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+      LEFT JOIN (
+        SELECT ic.object_id, ic.column_id
+        FROM sys.indexes i
+        JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+        WHERE i.is_primary_key = 1
+      ) pk ON pk.object_id = c.object_id AND pk.column_id = c.column_id
+      WHERE c.object_id = @ObjectId
+      ORDER BY c.column_id;
+    `);
+
+  const foreignKeysResult = await pool.request()
+    .input("ObjectId", sql.Int, objectId)
+    .query(`
+      SELECT
+        fk.name AS foreign_key_name,
+        pc.name AS column_name,
+        rs.name AS referenced_schema,
+        rt.name AS referenced_table,
+        rc.name AS referenced_column
+      FROM sys.foreign_keys fk
+      JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+      JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+      JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id
+      JOIN sys.schemas rs ON rs.schema_id = rt.schema_id
+      JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+      WHERE fk.parent_object_id = @ObjectId
+      ORDER BY fk.name, fkc.constraint_column_id;
+    `);
+
+  const indexesResult = await pool.request()
+    .input("ObjectId", sql.Int, objectId)
+    .query(`
+      SELECT
+        i.name AS index_name,
+        i.type_desc,
+        i.is_unique,
+        i.is_primary_key,
+        i.is_unique_constraint,
+        ic.key_ordinal,
+        c.name AS column_name,
+        ic.is_included_column
+      FROM sys.indexes i
+      JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+      JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+      WHERE i.object_id = @ObjectId AND i.name IS NOT NULL
+      ORDER BY i.name, ic.key_ordinal, ic.index_column_id;
+    `);
+
+  let sample = [];
+  const limit = parseLimit(sampleLimit, 0, 100);
+  if (limit > 0) {
+    const sampleResult = await pool.request().query(`
+      SELECT TOP (${limit}) *
+      FROM ${quoteSqlIdentifier(schemaName)}.${quoteSqlIdentifier(tableName)};
+    `);
+    sample = sampleResult.recordset || [];
+  }
+
+  return {
+    schema: schemaName,
+    table: tableName,
+    columns: columnsResult.recordset || [],
+    foreignKeys: foreignKeysResult.recordset || [],
+    indexes: indexesResult.recordset || [],
+    sample,
+  };
+}
+
+async function getCoreGsLookupTables() {
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request().query(`
+    SELECT
+      s.name AS schema_name,
+      t.name AS table_name,
+      MAX(CASE WHEN c.name = 'VALUE' THEN 1 ELSE 0 END) AS has_value,
+      MAX(CASE WHEN c.name = 'Description' THEN 1 ELSE 0 END) AS has_description,
+      MAX(CASE WHEN c.name = 'Sort' THEN 1 ELSE 0 END) AS has_sort
+    FROM sys.tables t
+    JOIN sys.schemas s ON s.schema_id = t.schema_id
+    JOIN sys.columns c ON c.object_id = t.object_id
+    GROUP BY s.name, t.name
+    HAVING t.name LIKE 'LUT[_]%'
+       OR MAX(CASE WHEN c.name = 'VALUE' THEN 1 ELSE 0 END) = 1
+    ORDER BY s.name, t.name;
+  `);
+  return result.recordset || [];
+}
+
+async function getCoreGsLookupValues({ schema = "dbo", table, limit = 200 }) {
+  const sql = require("mssql");
+  const schemaName = normalizeSqlIdentifier(schema);
+  const tableName = normalizeSqlIdentifier(table, "");
+  if (!tableName) throw createHttpError(400, "table is required");
+
+  const pool = await getCoreGsPool();
+  const metadata = await pool.request()
+    .input("SchemaName", sql.NVarChar(128), schemaName)
+    .input("TableName", sql.NVarChar(128), tableName)
+    .query(`
+      SELECT
+        MAX(CASE WHEN c.name = 'VALUE' THEN 1 ELSE 0 END) AS has_value,
+        MAX(CASE WHEN c.name = 'Description' THEN 1 ELSE 0 END) AS has_description,
+        MAX(CASE WHEN c.name = 'Sort' THEN 1 ELSE 0 END) AS has_sort
+      FROM sys.tables t
+      JOIN sys.schemas s ON s.schema_id = t.schema_id
+      JOIN sys.columns c ON c.object_id = t.object_id
+      WHERE s.name = @SchemaName AND t.name = @TableName;
+    `);
+  const row = metadata.recordset?.[0] || {};
+  if (!row.has_value) throw createHttpError(400, "Table is not a VALUE lookup table");
+
+  const safeLimit = parseLimit(limit, 200, 1000);
+  const columns = [
+    "VALUE",
+    row.has_description ? "Description" : "CAST(NULL AS nvarchar(4000)) AS Description",
+    row.has_sort ? "Sort" : "CAST(NULL AS int) AS Sort",
+  ].join(", ");
+  const orderBy = row.has_sort ? "ORDER BY COALESCE(Sort, 2147483647), VALUE" : "ORDER BY VALUE";
+  const result = await pool.request().query(`
+    SELECT TOP (${safeLimit}) ${columns}
+    FROM ${quoteSqlIdentifier(schemaName)}.${quoteSqlIdentifier(tableName)}
+    WHERE VALUE IS NOT NULL
+    ${orderBy};
+  `);
+  return result.recordset || [];
 }
 
 function nullableText(value) {
@@ -609,6 +886,7 @@ async function getFieldProjectPointRows() {
     points: pointsByProject.flat().map(point => ({
       PROJ_ID: nullableText(point.PROJ_ID),
       POINT_ID: nullableText(point.POINT_ID),
+      FieldType: nullableText(point.Type),
       Type: nullableText(point.Type),
       HoleDepth: nullableNumber(point.HoleDepth),
       Location: nullableText(point.Location),
@@ -625,7 +903,7 @@ async function getCoreGsProjectPointPreview() {
     dryRun: true,
     clientId: CORE_GS_CLNT_ID,
     projects: { total: projects.length, insert: 0, update: 0, unmatchedClient: 0 },
-    points: { total: points.length, insert: 0, update: 0, missingProject: 0 },
+    points: { total: points.length, insert: 0, update: 0, missingProject: 0, unmatchedType: 0 },
   };
 
   for (const project of projects) {
@@ -653,6 +931,8 @@ async function getCoreGsProjectPointPreview() {
       .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
       .input("PROJ_ID", sql.NVarChar(40), point.PROJ_ID)
       .input("POINT_ID", sql.NVarChar(40), point.POINT_ID)
+      .input("Type", sql.VarChar(20), point.Type)
+      .input("FieldType", sql.VarChar(20), point.FieldType)
       .query(`
         SELECT
           CASE WHEN EXISTS (
@@ -661,7 +941,12 @@ async function getCoreGsProjectPointPreview() {
           CASE WHEN EXISTS (
             SELECT 1 FROM dbo.POINT
             WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID
-          ) THEN 1 ELSE 0 END AS point_found;
+          ) THEN 1 ELSE 0 END AS point_found,
+          CASE WHEN @Type IS NULL OR EXISTS (
+            SELECT 1 FROM dbo.LUT_HoleType WHERE VALUE = @Type
+          ) THEN 1 ELSE 0 END AS type_found,
+          CASE WHEN @FieldType IS NOT NULL AND @Type IS NULL
+          THEN 1 ELSE 0 END AS type_unmapped;
       `);
     const row = result.recordset[0] || {};
     if (!row.project_found && !projects.some(project => project.PROJ_ID === point.PROJ_ID)) {
@@ -669,6 +954,7 @@ async function getCoreGsProjectPointPreview() {
     }
     if (row.point_found) preview.points.update += 1;
     else preview.points.insert += 1;
+    if (!row.type_found || row.type_unmapped) preview.points.unmatchedType += 1;
   }
 
   return preview;
@@ -743,14 +1029,29 @@ async function upsertCoreGsPoint(transaction, point) {
         UPDATE dbo.POINT
         SET HoleDepth = @HoleDepth,
             Location = @Location,
-            Type = @Type
+            Type = CASE
+              WHEN @Type IS NULL THEN NULL
+              WHEN EXISTS (SELECT 1 FROM dbo.LUT_HoleType WHERE VALUE = @Type) THEN @Type
+              ELSE NULL
+            END
         WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID;
         SELECT CAST('update' AS varchar(10)) AS action;
       END
       ELSE
       BEGIN
         INSERT INTO dbo.POINT (CLNT_ID, PROJ_ID, POINT_ID, HoleDepth, Location, Type)
-        VALUES (@CLNT_ID, @PROJ_ID, @POINT_ID, @HoleDepth, @Location, @Type);
+        VALUES (
+          @CLNT_ID,
+          @PROJ_ID,
+          @POINT_ID,
+          @HoleDepth,
+          @Location,
+          CASE
+            WHEN @Type IS NULL THEN NULL
+            WHEN EXISTS (SELECT 1 FROM dbo.LUT_HoleType WHERE VALUE = @Type) THEN @Type
+            ELSE NULL
+          END
+        );
         SELECT CAST('insert' AS varchar(10)) AS action;
       END
     `);
@@ -786,6 +1087,35 @@ async function syncCoreGsProjectsAndPoints({ dryRun = true } = {}) {
       if (action === "update") summary.points.update += 1;
     }
 
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    await transaction.rollback().catch(() => null);
+    throw error;
+  }
+}
+
+async function syncCoreGsPoints(points) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig() || !points.length) return null;
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const transaction = new sql.Transaction(pool);
+  const summary = { total: points.length, insert: 0, update: 0 };
+
+  await transaction.begin();
+  try {
+    for (const point of points) {
+      const action = await upsertCoreGsPoint(transaction, {
+        PROJ_ID: nullableText(point.PROJ_ID),
+        POINT_ID: nullableText(point.POINT_ID),
+        Type: nullableText(point.Type),
+        HoleDepth: nullableNumber(point.HoleDepth),
+        Location: nullableText(point.Location),
+      });
+      if (action === "insert") summary.insert += 1;
+      if (action === "update") summary.update += 1;
+    }
     await transaction.commit();
     return summary;
   } catch (error) {
@@ -1074,12 +1404,13 @@ async function syncPoints(points) {
   if (!db) throw createHttpError(503, "Sync requires PostgreSQL configuration");
   if (!Array.isArray(points)) throw createHttpError(400, "points must be an array");
 
+  const validPoints = points.filter(point => point?.PROJ_ID && point?.POINT_ID);
   const client = await db.connect();
+  let committed = false;
   try {
     await client.query("BEGIN");
     const saved = [];
-    for (const point of points) {
-      if (!point?.PROJ_ID || !point?.POINT_ID) continue;
+    for (const point of validPoints) {
       await client.query(
         `INSERT INTO points (proj_id, point_id, type, hole_depth, location)
          VALUES ($1, $2, $3, $4, $5)
@@ -1098,9 +1429,11 @@ async function syncPoints(points) {
       saved.push(`${point.PROJ_ID}:${point.POINT_ID}`);
     }
     await client.query("COMMIT");
+    committed = true;
+    await syncCoreGsPoints(validPoints);
     return saved;
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (!committed) await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
@@ -1326,27 +1659,82 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (url.pathname === "/api/core-gs/sync/projects-points" && req.method === "GET") {
+  if (url.pathname === "/api/core-gs/schema/tables" && req.method === "GET") {
     try {
-      sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: true }));
+      sendJson(res, 200, {
+        ok: true,
+        tables: await getCoreGsTables(url.searchParams.get("search") || ""),
+      });
     } catch (error) {
-      throw createCoreGsError(error, "CORE-GS preview");
+      throw createCoreGsError(error, "CORE-GS table discovery");
     }
     return;
   }
 
-  if (url.pathname === "/api/core-gs/sync/projects-points" && req.method === "POST") {
-    const body = await readRequestBody(req);
+  if (url.pathname === "/api/core-gs/schema/table" && req.method === "GET") {
     try {
-      sendJson(res, 200, await syncCoreGsProjectsAndPoints({ dryRun: body.dryRun !== false }));
+      sendJson(res, 200, {
+        ok: true,
+        ...(await getCoreGsTableDetails({
+          schema: url.searchParams.get("schema") || "dbo",
+          table: url.searchParams.get("table"),
+          sampleLimit: url.searchParams.get("sample") || 0,
+        })),
+      });
     } catch (error) {
-      throw createCoreGsError(error, body.dryRun === false ? "CORE-GS push" : "CORE-GS preview");
+      if (error?.statusCode && error.statusCode < 500) throw error;
+      throw createCoreGsError(error, "CORE-GS table inspection");
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/core-gs/lookups" && req.method === "GET") {
+    try {
+      sendJson(res, 200, {
+        ok: true,
+        lookups: await getCoreGsLookupTables(),
+      });
+    } catch (error) {
+      throw createCoreGsError(error, "CORE-GS lookup discovery");
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/core-gs/lookup-values" && req.method === "GET") {
+    try {
+      sendJson(res, 200, {
+        ok: true,
+        schema: url.searchParams.get("schema") || "dbo",
+        table: url.searchParams.get("table"),
+        values: await getCoreGsLookupValues({
+          schema: url.searchParams.get("schema") || "dbo",
+          table: url.searchParams.get("table"),
+          limit: url.searchParams.get("limit") || 200,
+        }),
+      });
+    } catch (error) {
+      if (error?.statusCode && error.statusCode < 500) throw error;
+      throw createCoreGsError(error, "CORE-GS lookup read");
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/lookups/hole-types" && req.method === "GET") {
+    try {
+      sendJson(res, 200, await getHoleTypes());
+    } catch (error) {
+      throw createCoreGsError(error, "CORE-GS hole type read");
     }
     return;
   }
 
   if (url.pathname === "/api/projects") {
-    sendJson(res, 200, await getProjects());
+    try {
+      sendJson(res, 200, await getProjects());
+    } catch (error) {
+      if (CORE_GS_ENABLED && hasCoreGsConfig()) throw createCoreGsError(error, "CORE-GS project read");
+      throw error;
+    }
     return;
   }
 
@@ -1356,7 +1744,12 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "proj_id is required" });
       return;
     }
-    sendJson(res, 200, await getPoints(projId));
+    try {
+      sendJson(res, 200, await getPoints(projId));
+    } catch (error) {
+      if (CORE_GS_ENABLED && hasCoreGsConfig()) throw createCoreGsError(error, "CORE-GS point read");
+      throw error;
+    }
     return;
   }
 
