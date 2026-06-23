@@ -1799,6 +1799,7 @@ function GeoModule({ activeJob, showToast, syncTick }) {
       mode: geoMode, description: desc,
       top: topNum, base: baseNum,
       material: geoMode==="soil" ? soilState.major||"" : rockState.rockname||rockState.rockname_custom||"",
+      MoistureCondition: geoMode==="soil" ? soilState.moisture || null : null,
       created_at: new Date().toISOString(), sync_status:"pending",
       snapshot: JSON.stringify(geoMode==="soil" ? soilState : rockState),
     };

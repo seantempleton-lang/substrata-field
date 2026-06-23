@@ -1233,6 +1233,195 @@ async function syncCoreGsPoints(points) {
   }
 }
 
+function normalizeGeologyRecord(record) {
+  const top = nullableNumber(record.TOP ?? record.top);
+  const base = nullableNumber(record.BASE ?? record.base);
+  return {
+    id: nullableText(record.id) || `geo_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    PROJ_ID: nullableText(record.PROJ_ID),
+    POINT_ID: nullableText(record.POINT_ID),
+    top,
+    base,
+    description: nullableText(record.Description ?? record.description),
+    remarks: nullableText(record.Remarks ?? record.remarks),
+    MoistureCondition: nullableText(record.MoistureCondition ?? record.moisture_condition),
+    mode: nullableText(record.mode) || "soil",
+    material: nullableText(record.material),
+    created_at: nullableText(record.created_at) || new Date().toISOString(),
+  };
+}
+
+function normalizeLookupMatch(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+async function resolveCoreGsMoistureCondition(transaction, moistureText) {
+  const value = nullableText(moistureText);
+  if (!value) return null;
+
+  const sql = require("mssql");
+  const normalized = normalizeLookupMatch(value);
+  const result = await transaction.request()
+    .input("Moisture", sql.NVarChar(200), normalized)
+    .query(`
+      SELECT TOP (1) TypeID
+      FROM dbo.LUT_MoistureType
+      WHERE LOWER(LTRIM(RTRIM(TypeID))) = @Moisture
+         OR LOWER(LTRIM(RTRIM(COALESCE(Code, '')))) = @Moisture
+         OR LOWER(LTRIM(RTRIM(COALESCE(Description, '')))) = @Moisture
+      ORDER BY ID;
+    `);
+
+  return nullableText(result.recordset?.[0]?.TypeID);
+}
+
+async function validateCoreGsGeology(transaction, geology) {
+  const sql = require("mssql");
+  if (!geology.PROJ_ID || !geology.POINT_ID) throw createHttpError(400, "PROJ_ID and POINT_ID are required");
+  if (geology.top === null || geology.base === null) throw createHttpError(400, "GEOLOGY TOP and BASE are required");
+  if (geology.base <= geology.top) throw createHttpError(400, "GEOLOGY BASE must be greater than TOP");
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), geology.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), geology.POINT_ID)
+    .query(`
+      SELECT CASE WHEN EXISTS (
+        SELECT 1
+        FROM dbo.POINT
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID
+      ) THEN 1 ELSE 0 END AS point_found;
+    `);
+
+  if (!result.recordset?.[0]?.point_found) {
+    throw createHttpError(400, `Point ${geology.PROJ_ID}/${geology.POINT_ID} does not exist in CORE-GS`);
+  }
+}
+
+async function upsertCoreGsGeology(transaction, record) {
+  const sql = require("mssql");
+  const geology = normalizeGeologyRecord(record);
+  await validateCoreGsGeology(transaction, geology);
+  const moistureCondition = await resolveCoreGsMoistureCondition(transaction, geology.MoistureCondition);
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), geology.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), geology.POINT_ID)
+    .input("TOP", sql.Decimal(5, 2), geology.top)
+    .input("BASE", sql.Decimal(5, 2), geology.base)
+    .input("Description", sql.VarChar(sql.MAX), geology.description)
+    .input("Remarks", sql.VarChar(sql.MAX), geology.remarks)
+    .input("MoistureCondition", sql.NVarChar(40), moistureCondition)
+    .query(`
+      IF EXISTS (
+        SELECT 1 FROM dbo.GEOLOGY
+        WHERE CLNT_ID = @CLNT_ID
+          AND PROJ_ID = @PROJ_ID
+          AND POINT_ID = @POINT_ID
+          AND [TOP] = @TOP
+          AND [BASE] = @BASE
+      )
+      BEGIN
+        UPDATE dbo.GEOLOGY
+        SET Description = @Description,
+            Remarks = @Remarks,
+            MoistureCondition = @MoistureCondition
+        WHERE CLNT_ID = @CLNT_ID
+          AND PROJ_ID = @PROJ_ID
+          AND POINT_ID = @POINT_ID
+          AND [TOP] = @TOP
+          AND [BASE] = @BASE;
+        SELECT CAST('update' AS varchar(10)) AS action;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.GEOLOGY (
+          CLNT_ID, PROJ_ID, POINT_ID, [TOP], [BASE], Description, Remarks, MoistureCondition
+        )
+        VALUES (
+          @CLNT_ID, @PROJ_ID, @POINT_ID, @TOP, @BASE, @Description, @Remarks, @MoistureCondition
+        );
+        SELECT CAST('insert' AS varchar(10)) AS action;
+      END
+    `);
+  return result.recordset?.[0]?.action || "unknown";
+}
+
+async function syncCoreGsGeology(records) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig() || !records.length) return null;
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const transaction = new sql.Transaction(pool);
+  const summary = { total: records.length, insert: 0, update: 0 };
+
+  await transaction.begin();
+  try {
+    for (const record of records) {
+      const action = await upsertCoreGsGeology(transaction, record);
+      if (action === "insert") summary.insert += 1;
+      if (action === "update") summary.update += 1;
+    }
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    await transaction.rollback().catch(() => null);
+    throw error;
+  }
+}
+
+async function getCoreGsGeologyRecords(projId, pointId) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig()) return [];
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), projId)
+    .input("POINT_ID", sql.NVarChar(40), pointId)
+    .query(`
+      SELECT
+        PROJ_ID,
+        POINT_ID,
+        [TOP] AS top,
+        [BASE] AS base,
+        Description AS description,
+        Remarks AS remarks,
+        MoistureCondition AS MoistureCondition,
+        Legend AS material,
+        _timestamp AS created_at
+      FROM dbo.GEOLOGY
+      WHERE CLNT_ID = @CLNT_ID
+        AND PROJ_ID = @PROJ_ID
+        AND POINT_ID = @POINT_ID
+      ORDER BY [TOP], [BASE];
+    `);
+
+  return (result.recordset || []).map(row => ({
+    record_type: "geology",
+    record: {
+      id: `geo_coregs_${row.PROJ_ID}_${row.POINT_ID}_${row.top}_${row.base}`,
+      GEO_ID: null,
+      PROJ_ID: nullableText(row.PROJ_ID),
+      POINT_ID: nullableText(row.POINT_ID),
+      mode: "soil",
+      description: nullableText(row.description),
+      top: nullableNumber(row.top),
+      base: nullableNumber(row.base),
+      material: nullableText(row.material),
+      remarks: nullableText(row.remarks),
+      MoistureCondition: nullableText(row.MoistureCondition),
+      created_at: row.created_at || new Date().toISOString(),
+      sync_status: "synced",
+      source: "core-gs",
+    },
+  }));
+}
+
 async function getHealth() {
   const db = getPool();
   if (!db) {
@@ -1612,6 +1801,8 @@ async function syncRecords(records) {
   if (!Array.isArray(records)) throw createHttpError(400, "records must be an array");
 
   const client = await db.connect();
+  const coreGsGeology = [];
+  let committed = false;
   try {
     await client.query("BEGIN");
     const saved = [];
@@ -1643,11 +1834,14 @@ async function syncRecords(records) {
         ]
       );
       saved.push(`${recordType}:${record.id}`);
+      if (recordType === "geology") coreGsGeology.push(record);
     }
     await client.query("COMMIT");
+    committed = true;
+    await syncCoreGsGeology(coreGsGeology);
     return saved;
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (!committed) await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();
@@ -1656,7 +1850,8 @@ async function syncRecords(records) {
 
 async function getSyncedRecords(projId, pointId) {
   const db = getPool();
-  if (!db) return [];
+  const coreGsRecords = await getCoreGsGeologyRecords(projId, pointId);
+  if (!db) return coreGsRecords;
 
   const result = await db.query(
     `SELECT record_type, payload
@@ -1666,10 +1861,17 @@ async function getSyncedRecords(projId, pointId) {
     [projId, pointId]
   );
 
-  return result.rows.map(row => ({
+  const postgresRecords = result.rows.map(row => ({
     record_type: row.record_type,
     record: { ...row.payload, sync_status: "synced" },
   }));
+  const seen = new Set(postgresRecords.map(item =>
+    `${item.record_type}:${item.record.PROJ_ID}:${item.record.POINT_ID}:${item.record.top}:${item.record.base}`
+  ));
+  const mergedCoreGsRecords = coreGsRecords.filter(item =>
+    !seen.has(`${item.record_type}:${item.record.PROJ_ID}:${item.record.POINT_ID}:${item.record.top}:${item.record.base}`)
+  );
+  return [...postgresRecords, ...mergedCoreGsRecords];
 }
 
 function readRequestBody(req) {
@@ -1942,14 +2144,25 @@ async function handleApi(req, res, url) {
       sendJson(res, 400, { error: "proj_id and point_id are required" });
       return;
     }
-    sendJson(res, 200, { ok: true, records: await getSyncedRecords(projId, pointId) });
+    try {
+      sendJson(res, 200, { ok: true, records: await getSyncedRecords(projId, pointId) });
+    } catch (error) {
+      if (CORE_GS_ENABLED && hasCoreGsConfig()) throw createCoreGsError(error, "CORE-GS geology read");
+      throw error;
+    }
     return;
   }
 
   if (url.pathname === "/api/sync/records" && req.method === "POST") {
     const body = await readRequestBody(req);
-    const saved = await syncRecords(body.records || []);
-    sendJson(res, 200, { ok: true, saved });
+    try {
+      const saved = await syncRecords(body.records || []);
+      sendJson(res, 200, { ok: true, saved });
+    } catch (error) {
+      if (error?.statusCode && error.statusCode < 500) throw error;
+      if (CORE_GS_ENABLED && hasCoreGsConfig()) throw createCoreGsError(error, "CORE-GS record sync");
+      throw error;
+    }
     return;
   }
 
