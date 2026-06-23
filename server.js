@@ -1387,8 +1387,8 @@ async function getCoreGsGeologyRecords(projId, pointId) {
       SELECT
         PROJ_ID,
         POINT_ID,
-        [TOP] AS top,
-        [BASE] AS base,
+        [TOP] AS top_depth,
+        [BASE] AS base_depth,
         Description AS description,
         Remarks AS remarks,
         MoistureCondition AS MoistureCondition,
@@ -1404,14 +1404,14 @@ async function getCoreGsGeologyRecords(projId, pointId) {
   return (result.recordset || []).map(row => ({
     record_type: "geology",
     record: {
-      id: `geo_coregs_${row.PROJ_ID}_${row.POINT_ID}_${row.top}_${row.base}`,
+      id: `geo_coregs_${row.PROJ_ID}_${row.POINT_ID}_${row.top_depth}_${row.base_depth}`,
       GEO_ID: null,
       PROJ_ID: nullableText(row.PROJ_ID),
       POINT_ID: nullableText(row.POINT_ID),
       mode: "soil",
       description: nullableText(row.description),
-      top: nullableNumber(row.top),
-      base: nullableNumber(row.base),
+      top: nullableNumber(row.top_depth),
+      base: nullableNumber(row.base_depth),
       material: nullableText(row.material),
       remarks: nullableText(row.remarks),
       MoistureCondition: nullableText(row.MoistureCondition),
