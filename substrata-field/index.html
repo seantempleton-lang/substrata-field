@@ -52,9 +52,9 @@ function isIosInstallTarget() {
 }
 
 
-// â”€â”€â”€ DESIGN TOKENS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- DESIGN TOKENS ------------------------------------------------------------------------------------------------------------------------------------------------------------
 const T = {
-  bg:       "#f4f5f7",   // light grey page bg â€” SubStrata style
+  bg:       "#f4f5f7",   // light grey page bg - SubStrata style
   surface:  "#ffffff",
   surface2: "#f8f9fa",
   border:   "#e5e7eb",
@@ -82,7 +82,7 @@ const T = {
   mono:     "'SF Mono','Fira Mono','Courier New',monospace",
 };
 
-// Module config â€” drives tab bar and routing
+// Module config - drives tab bar and routing
 const MODULES = [
   { id:"jobs",   label:"Jobs",   icon:"briefcase", color: T.amber  },
   { id:"geo",    label:"Geo",    icon:"layers",    color: T.accent },
@@ -145,7 +145,7 @@ function ModuleIcon({ name, size=20, color="currentColor", strokeWidth=2 }) {
   );
 }
 
-// â”€â”€â”€ INDEXEDDB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- INDEXEDDB ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const DB_NAME = "substrata-field", DB_VER = 2;
 const STORES  = ["active_job","jobs_cache","geology","spt","core","photos","notes"];
 let _db = null;
@@ -282,6 +282,11 @@ async function syncPendingPoints() {
         Type: point.Type || null,
         HoleDepth: point.HoleDepth ?? null,
         Location: point.Location || "",
+        Remarks: point.Remarks || "",
+        Status: point.Status || null,
+        Rig: point.Rig || null,
+        DrillerLookup: point.DrillerLookup || null,
+        Grid: point.Grid || null,
       })),
     }),
   });
@@ -390,7 +395,7 @@ async function getPendingSyncSummary() {
   return summary;
 }
 
-// â”€â”€â”€ SHARED UI ATOMS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- SHARED UI ATOMS ------------------------------------------------------------------------------------------------------------------------------------------------------
 
 function Card({ children, style }) {
   return (
@@ -460,6 +465,23 @@ function TextInput({ value, onChange, placeholder, style }) {
   );
 }
 
+function SelectInput({ value, onChange, options, placeholder, style }) {
+  return (
+    <select value={value || ""} onChange={e=>onChange(e.target.value)}
+      style={{ width:"100%", background:T.surface2,
+        border:`1px solid ${T.border}`, borderRadius:8,
+        color:value ? T.text : T.dim, fontFamily:T.sans, fontSize:15,
+        padding:"11px 12px", outline:"none", ...style }}>
+      <option value="">{placeholder || "Optional"}</option>
+      {(options || []).map(item => (
+        <option key={item.VALUE} value={item.VALUE}>
+          {item.Description ? `${item.VALUE} - ${item.Description}` : item.VALUE}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function Toast({ message, visible }) {
   return (
     <div style={{
@@ -497,7 +519,7 @@ function NoJobGuard({ moduleName, onGoToJobs }) {
   );
 }
 
-// â”€â”€â”€ JOBS MODULE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- JOBS MODULE ------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const DEFAULT_BOREHOLE_TYPES = [
   { VALUE:"RC", Description:"Rotary cored" },
@@ -507,6 +529,21 @@ const DEFAULT_BOREHOLE_TYPES = [
   { VALUE:"TP", Description:"Trial pit/trench" },
   { VALUE:"WS", Description:"Window sampler" },
 ];
+
+const EMPTY_POINT_LOOKUPS = {
+  holeTypes: DEFAULT_BOREHOLE_TYPES,
+  statuses: [],
+  rigs: [],
+  drillers: [],
+  grids: [],
+};
+
+function blankPointDraft(type="RC") {
+  return {
+    POINT_ID:"", Type:type, HoleDepth:"", Location:"", Remarks:"",
+    Status:"", Rig:"", DrillerLookup:"", Grid:""
+  };
+}
 
 function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, onAuthExpired }) {
   const [view,        setView]        = useState("home"); // home | select_project | select_borehole | new_borehole
@@ -518,10 +555,8 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
   const [syncing,     setSyncing]     = useState(false);
   const [apiBase,     setApiBase]     = useState(DEFAULT_API_BASE);
   const [showApiEdit, setShowApiEdit] = useState(false);
-  const [holeTypes,   setHoleTypes]   = useState(DEFAULT_BOREHOLE_TYPES);
-  const [newBH,       setNewBH]       = useState({
-    POINT_ID:"", Type:"RC", HoleDepth:"", Location:"", Remarks:""
-  });
+  const [pointLookups,setPointLookups]= useState(EMPTY_POINT_LOOKUPS);
+  const [newBH,       setNewBH]       = useState(blankPointDraft());
 
   // Load cached projects and API base on mount
   useEffect(() => {
@@ -532,9 +567,15 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     dbGet("active_job","api_base").then(r => {
       if (r?.value) setApiBase(r.value);
     });
-    apiJson("/lookups/hole-types")
-      .then(types => {
-        if (Array.isArray(types) && types.length) setHoleTypes(types);
+    apiJson("/lookups/point-fields")
+      .then(lookups => {
+        const next = { ...EMPTY_POINT_LOOKUPS, ...(lookups || {}) };
+        if (!Array.isArray(next.holeTypes) || !next.holeTypes.length) next.holeTypes = DEFAULT_BOREHOLE_TYPES;
+        setPointLookups(next);
+        setNewBH(prev => {
+          const hasType = next.holeTypes.some(type => type.VALUE === prev.Type);
+          return hasType ? prev : { ...prev, Type:next.holeTypes[0]?.VALUE || "RC" };
+        });
       })
       .catch(() => null);
   }, []);
@@ -615,9 +656,14 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
       PROJ_ID:    selProject.PROJ_ID,
       PROJ_NAME:  selProject.PROJ_NAME,
       POINT_ID:   bh.POINT_ID,
-      Type:       bh.Type || "BH",
+      Type:       bh.Type || "",
       HoleDepth:  bh.HoleDepth || null,
       Location:   bh.Location || "",
+      Remarks:    bh.Remarks || "",
+      Status:     bh.Status || "",
+      Rig:        bh.Rig || "",
+      DrillerLookup: bh.DrillerLookup || "",
+      Grid:       bh.Grid || "",
       started_at: new Date().toISOString(),
       is_new:     bh.is_new || false,
       sync_status: bh.is_new ? "pending" : "synced",
@@ -630,6 +676,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
 
   const createBorehole = async () => {
     if (!newBH.POINT_ID.trim()) { showToast("Enter a borehole ID"); return; }
+    if (!newBH.Type) { showToast("Select a borehole type"); return; }
     const bh = {
       ...newBH,
       id:         `bh_${selProject.PROJ_ID}_${newBH.POINT_ID}`,
@@ -661,7 +708,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     b.Location?.toLowerCase().includes(bhSearch.toLowerCase())
   );
 
-  // â”€â”€ HOME VIEW â”€â”€
+  // ------ HOME VIEW ------
   if (view === "home") return (
     <div style={{ flex:1, overflowY:"auto", paddingBottom:24 }}>
 
@@ -684,7 +731,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
                   <span style={{ background:T.amber+"22", border:`1px solid ${T.amber}`,
                     borderRadius:6, fontFamily:T.sans, fontSize:10, fontWeight:700,
                     color:T.amber, padding:"3px 8px", letterSpacing:"0.08em" }}>
-                    NEW â€” pending sync
+                    NEW - pending sync
                   </span>
                 )}
               </div>
@@ -700,7 +747,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
                 <div>
                   <div style={{ fontFamily:T.sans, fontSize:11, color:T.dim, marginBottom:2, letterSpacing:"0.06em" }}>TYPE</div>
                   <div style={{ fontFamily:T.sans, fontSize:16, fontWeight:600, color:T.text }}>
-                    {activeJob.Type || "â€”"}
+                    {activeJob.Type || " - "}
                   </div>
                 </div>
                 {activeJob.HoleDepth && (
@@ -747,7 +794,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
                     syncState.pending.photos ? `${syncState.pending.photos} photos` : null,
                     syncState.pending.consumable ? `${syncState.pending.consumable} consumables` : null,
                     syncState.pending.installation ? `${syncState.pending.installation} installs` : null,
-                  ].filter(Boolean).join(" Â· ")}
+                  ].filter(Boolean).join(" - ")}
                 </div>
               )}
               {syncState?.error && (
@@ -768,7 +815,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
       ) : (
         <>
           <div style={{ padding:"32px 24px 16px", textAlign:"center" }}>
-            <div style={{ fontSize:48, marginBottom:12 }}>â¬¡</div>
+            <div style={{ fontSize:48, marginBottom:12 }}>down</div>
             <div style={{ fontFamily:T.sans, fontSize:20, fontWeight:800,
               color:T.text, marginBottom:8 }}>No active job</div>
             <div style={{ fontFamily:T.sans, fontSize:14, color:T.dim, lineHeight:1.6 }}>
@@ -815,7 +862,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
             </div>
             <Btn onClick={fetchProjects} color={T.accent} small
               disabled={syncing} style={{ marginTop:10, width:"100%" }}>
-              {syncing ? "Refreshingâ€¦" : "Refresh from CORE-GS"}
+              {syncing ? "Refreshing..." : "Refresh from CORE-GS"}
             </Btn>
           </CardSection>
         )}
@@ -831,19 +878,19 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     </div>
   );
 
-  // â”€â”€ SELECT PROJECT VIEW â”€â”€
+  // ------ SELECT PROJECT VIEW ------
   if (view === "select_project") return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
       <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}`,
         background:T.white, flexShrink:0 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:8 }}>
-          <Btn onClick={() => setView("home")} outline color={T.accent} small>â† Back</Btn>
+          <Btn onClick={() => setView("home")} outline color={T.accent} small>Back</Btn>
           <div style={{ fontFamily:T.sans, fontSize:15, fontWeight:700, color:T.text }}>
             Select Project
           </div>
         </div>
         <TextInput value={search} onChange={setSearch}
-          placeholder="Search by project ID or nameâ€¦" />
+          placeholder="Search by project ID or name..." />
       </div>
 
       <div style={{ flex:1, overflowY:"auto", padding:"8px 0 24px" }}>
@@ -876,28 +923,28 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     </div>
   );
 
-  // â”€â”€ SELECT BOREHOLE VIEW â”€â”€
+  // ------ SELECT BOREHOLE VIEW ------
   if (view === "select_borehole") return (
     <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
       <div style={{ padding:"10px 12px", borderBottom:`1px solid ${T.border}`,
         background:T.white, flexShrink:0 }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
-          <Btn onClick={() => setView("select_project")} outline color={T.accent} small>â† Back</Btn>
+          <Btn onClick={() => setView("select_project")} outline color={T.accent} small>Back</Btn>
           <div>
             <div style={{ fontFamily:T.sans, fontSize:15, fontWeight:700, color:T.text }}>
               Select Borehole
             </div>
             <div style={{ fontFamily:T.sans, fontSize:12, color:T.accent }}>
-              {selProject?.PROJ_ID} â€” {selProject?.PROJ_NAME}
+              {selProject?.PROJ_ID} - {selProject?.PROJ_NAME}
             </div>
           </div>
         </div>
         <div style={{ display:"flex", gap:8, marginTop:8 }}>
           <div style={{ flex:1 }}>
             <TextInput value={bhSearch} onChange={setBhSearch}
-              placeholder="Search boreholesâ€¦" />
+              placeholder="Search boreholes..." />
           </div>
-          <Btn onClick={() => { setView("new_borehole"); setNewBH({POINT_ID:"",Type:"RC",HoleDepth:"",Location:"",Remarks:""}); }}
+          <Btn onClick={() => { setView("new_borehole"); setNewBH(blankPointDraft(pointLookups.holeTypes[0]?.VALUE || "RC")); }}
             color={T.accent} small>+ New</Btn>
         </div>
       </div>
@@ -906,7 +953,7 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
         {syncing && (
           <div style={{ padding:"16px", textAlign:"center",
             fontFamily:T.sans, fontSize:13, color:T.dim }}>
-            Loading boreholesâ€¦
+            Loading boreholes...
           </div>
         )}
         {!syncing && filteredBH.length === 0 && (
@@ -951,31 +998,31 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     </div>
   );
 
-  // â”€â”€ NEW BOREHOLE VIEW â”€â”€
+  // ------ NEW BOREHOLE VIEW ------
   if (view === "new_borehole") return (
     <div style={{ flex:1, overflowY:"auto", paddingBottom:24 }}>
       <div style={{ padding:"10px 12px 0", display:"flex", alignItems:"center", gap:10 }}>
-        <Btn onClick={() => setView("select_borehole")} outline color={T.accent} small>â† Back</Btn>
+        <Btn onClick={() => setView("select_borehole")} outline color={T.accent} small>Back</Btn>
         <div style={{ fontFamily:T.sans, fontSize:15, fontWeight:700, color:T.text }}>
           New Borehole
         </div>
       </div>
       <div style={{ fontFamily:T.sans, fontSize:12, color:T.accent, padding:"2px 16px 8px" }}>
-        {selProject?.PROJ_ID} â€” {selProject?.PROJ_NAME}
+        {selProject?.PROJ_ID} - {selProject?.PROJ_NAME}
       </div>
 
       <SectionLabel>Borehole Details</SectionLabel>
       <Card>
         <CardSection>
-          <FieldLabel>Borehole ID âœ±</FieldLabel>
+          <FieldLabel>Borehole ID *</FieldLabel>
           <TextInput value={newBH.POINT_ID}
             onChange={v => setNewBH(p=>({...p,POINT_ID:v.toUpperCase()}))}
-            placeholder="e.g. BH01, TP03â€¦" />
+            placeholder="e.g. BH01, TP03..." />
         </CardSection>
         <CardSection>
           <FieldLabel>Type</FieldLabel>
           <div style={{ display:"flex", flexWrap:"wrap", gap:7 }}>
-            {holeTypes.map(t => (
+            {pointLookups.holeTypes.map(t => (
               <button key={t.VALUE} onClick={() => setNewBH(p=>({...p,Type:t.VALUE}))} title={t.Description || t.VALUE} style={{
                 padding:"8px 14px", borderRadius:8,
                 border:`2px solid ${newBH.Type===t.VALUE ? T.accent : T.border}`,
@@ -988,26 +1035,54 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
           </div>
         </CardSection>
         <CardSection>
-          <FieldLabel>Planned depth (m) â€” optional</FieldLabel>
+          <FieldLabel>Planned depth (m) - optional</FieldLabel>
           <input type="number" value={newBH.HoleDepth} step="0.5" min="0"
             onChange={e => setNewBH(p=>({...p,HoleDepth:e.target.value}))}
-            placeholder="â€”"
+            placeholder="-"
             style={{ width:"120px", background:T.surface2,
               border:`1.5px solid ${T.border2}`, borderRadius:8,
               color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:600,
               padding:"10px 12px", outline:"none", textAlign:"center" }} />
         </CardSection>
         <CardSection>
-          <FieldLabel>Location description â€” optional</FieldLabel>
+          <FieldLabel>Location description - optional</FieldLabel>
           <TextInput value={newBH.Location}
             onChange={v => setNewBH(p=>({...p,Location:v}))}
-            placeholder="e.g. NW corner of site, 5m from fenceâ€¦" />
+            placeholder="e.g. NW corner of site, 5m from fence..." />
+        </CardSection>
+        <CardSection>
+          <FieldLabel>Status - optional</FieldLabel>
+          <SelectInput value={newBH.Status}
+            onChange={v => setNewBH(p=>({...p,Status:v}))}
+            options={pointLookups.statuses}
+            placeholder="No status selected" />
+        </CardSection>
+        <CardSection>
+          <FieldLabel>Rig - optional</FieldLabel>
+          <SelectInput value={newBH.Rig}
+            onChange={v => setNewBH(p=>({...p,Rig:v}))}
+            options={pointLookups.rigs}
+            placeholder="No rig selected" />
+        </CardSection>
+        <CardSection>
+          <FieldLabel>Driller - optional</FieldLabel>
+          <SelectInput value={newBH.DrillerLookup}
+            onChange={v => setNewBH(p=>({...p,DrillerLookup:v}))}
+            options={pointLookups.drillers}
+            placeholder="No driller selected" />
+        </CardSection>
+        <CardSection>
+          <FieldLabel>Grid - optional</FieldLabel>
+          <SelectInput value={newBH.Grid}
+            onChange={v => setNewBH(p=>({...p,Grid:v}))}
+            options={pointLookups.grids}
+            placeholder="No grid selected" />
         </CardSection>
         <CardSection last>
-          <FieldLabel>Remarks â€” optional</FieldLabel>
+          <FieldLabel>Remarks - optional</FieldLabel>
           <textarea value={newBH.Remarks}
             onChange={e => setNewBH(p=>({...p,Remarks:e.target.value}))}
-            rows={2} placeholder="Any notes about this boreholeâ€¦"
+            rows={2} placeholder="Any notes about this borehole..."
             style={{ width:"100%", background:T.surface2,
               border:`1.5px solid ${T.border}`, borderRadius:8,
               color:T.text, fontFamily:T.sans, fontSize:14,
@@ -1028,11 +1103,11 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
 
 
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// GEO MODULE â€” NZGS soil and rock description
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// =======================================================================
+// GEO MODULE - NZGS soil and rock description
+// =======================================================================
 
-// â”€â”€â”€ NZGS DATA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- NZGS DATA ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const MAJOR_SOILS = [
   { v:"GRAVEL",   g:"coarse" }, { v:"SAND",    g:"coarse" },
   { v:"COBBLES",  g:"coarse" }, { v:"BOULDERS",g:"coarse" },
@@ -1054,9 +1129,9 @@ const SECONDARY_MATERIALS = [
 ];
 
 const MINOR_QTY_OPTS = [
-  { v:"subordinate", l:"Subordinate", hint:"20â€“50%" },
-  { v:"with some",   l:"with some",   hint:"12â€“20%" },
-  { v:"with minor",  l:"with minor",  hint:"5â€“12%"  },
+  { v:"subordinate", l:"Subordinate", hint:"20-50%" },
+  { v:"with some",   l:"with some",   hint:"12-20%" },
+  { v:"with minor",  l:"with minor",  hint:"5-12%"  },
   { v:"with trace of",l:"with trace of",hint:"<5%"  },
 ];
 
@@ -1102,7 +1177,7 @@ const ROCK_STRENGTH = [
   { v:"extremely weak",    hint:"Indented by thumb nail" },
 ];
 
-// â”€â”€â”€ RANGE SELECT HOOK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- RANGE SELECT HOOK ------------------------------------------------------------------------------------------------------------------------------------------------
 function useRangeSelect(items) {
   const [range, setRange] = useState(null);
 
@@ -1128,7 +1203,7 @@ function useRangeSelect(items) {
   return { range, toggle, clear, label, inRange, isEndpoint };
 }
 
-// â”€â”€â”€ DESCRIPTION BUILDERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- DESCRIPTION BUILDERS ---------------------------------------------------------------------------------------------------------------------------------------
 function buildSoilDesc(s) {
   if (!s.major) return "";
   // Grain size prefix goes before the MAJOR name (e.g. "fine to medium GRAVEL")
@@ -1157,7 +1232,7 @@ function buildSoilDesc(s) {
 
   if (s.top) {
     const d = s.base
-      ? `${parseFloat(s.top).toFixed(2)}â€“${parseFloat(s.base).toFixed(2)}m`
+      ? `${parseFloat(s.top).toFixed(2)}-${parseFloat(s.base).toFixed(2)}m`
       : `${parseFloat(s.top).toFixed(2)}m`;
     desc = `[${d}] ` + desc;
   }
@@ -1185,7 +1260,7 @@ function buildRockDesc(s) {
 
   if (s.r_top) {
     const d = s.r_base
-      ? `${parseFloat(s.r_top).toFixed(2)}â€“${parseFloat(s.r_base).toFixed(2)}m`
+      ? `${parseFloat(s.r_top).toFixed(2)}-${parseFloat(s.r_base).toFixed(2)}m`
       : `${parseFloat(s.r_top).toFixed(2)}m`;
     desc = `[${d}] ` + desc;
   }
@@ -1245,17 +1320,17 @@ function DepthRow({ top, base, onTop, onBase }) {
         <input type="number" value={top} step="0.01" min="0"
           onChange={e => onTop(e.target.value)} style={inp} />
       </div>
-      <div style={{ color:T.dim, fontSize:20, paddingBottom:14 }}>â†“</div>
+      <div style={{ color:T.dim, fontSize:20, paddingBottom:14 }}>down</div>
       <div style={{ flex:1 }}>
         <FieldLabel>Base (m)</FieldLabel>
-        <input type="number" value={base} step="0.01" min="0" placeholder="â€”"
+        <input type="number" value={base} step="0.01" min="0" placeholder="-"
           onChange={e => onBase(e.target.value)} style={inp} />
       </div>
     </div>
   );
 }
 
-// â”€â”€â”€ SOIL FORM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- SOIL FORM ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const SOIL_INIT = {
   top:"0.00", base:"", major:null,
   grain_size:null,
@@ -1295,7 +1370,7 @@ function SoilForm({ state:s, dispatch }) {
       </CardSection>
     </Card>
 
-    <SectionLabel>Major Material âœ±</SectionLabel>
+    <SectionLabel>Major Material *</SectionLabel>
     <Card>
       {["coarse","fine","other"].map((grp,gi) => (
         <CardSection key={grp} last={gi===2}>
@@ -1313,10 +1388,10 @@ function SoilForm({ state:s, dispatch }) {
           </PillRow>
         </CardSection>
       ))}
-      {/* Grain size â€” only shown when GRAVEL or SAND is selected */}
+      {/* Grain size - only shown when GRAVEL or SAND is selected */}
       {HAS_GRAIN_SIZE.has(s.major) && (
         <CardSection last>
-          <FieldLabel>Grain size â€” tap once Â· tap two for a range</FieldLabel>
+          <FieldLabel>Grain size - tap once - tap two for a range</FieldLabel>
           <PillRow>
             {GRAIN_SIZE_COARSE.map((v,i) => (
               <RangePill key={v} label={v} idx={i}
@@ -1384,7 +1459,7 @@ function SoilForm({ state:s, dispatch }) {
     <SectionLabel>Moisture Condition</SectionLabel>
     <Card>
       <CardSection last>
-        <FieldLabel>Tap once Â· tap two for a range</FieldLabel>
+        <FieldLabel>Tap once - tap two for a range</FieldLabel>
         <PillRow>
           {MOISTURE.map((v,i) => (
             <RangePill key={v} label={v} idx={i}
@@ -1399,7 +1474,7 @@ function SoilForm({ state:s, dispatch }) {
       <SectionLabel>Particle Shape</SectionLabel>
       <Card>
         <CardSection last>
-          <FieldLabel>Tap once Â· tap two for a range</FieldLabel>
+          <FieldLabel>Tap once - tap two for a range</FieldLabel>
           <PillRow>
             {PARTICLE_SHAPE.map((v,i) => (
               <RangePill key={v} label={v} idx={i}
@@ -1416,7 +1491,7 @@ function SoilForm({ state:s, dispatch }) {
       <CardSection last>
         <textarea value={s.remarks} rows={3}
           onChange={e => dispatch({field:"remarks",value:e.target.value})}
-          placeholder="e.g. HINUERA FORMATION, greywacke fragmentsâ€¦"
+          placeholder="e.g. HINUERA FORMATION, greywacke fragments..."
           style={{ width:"100%", background:T.surface2, border:`1.5px solid ${T.border}`,
             borderRadius:8, color:T.text, fontFamily:T.mono, fontSize:15,
             padding:"10px 12px", outline:"none", resize:"none", lineHeight:1.6 }} />
@@ -1425,14 +1500,14 @@ function SoilForm({ state:s, dispatch }) {
   </>;
 }
 
-// â”€â”€â”€ ROCK FORM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- ROCK FORM ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const ROCK_INIT = {
   r_top:"0.00", r_base:"",
   weathering:null, r_col_mod:null, r_col_main:null,
   rockname:null, rockname_custom:"", rockstrength:null, r_remarks:"",
 };
 
-// Pill with expandable hint â€” tapping shows/hides hint text
+// Pill with expandable hint - tapping shows/hides hint text
 function HintPill({ label, hint, selected, onClick, accent }) {
   const [open, setOpen] = useState(false);
   const handleClick = () => {
@@ -1462,7 +1537,7 @@ function HintPill({ label, hint, selected, onClick, accent }) {
           fontSize:13, fontWeight:400,
           color: selected ? "rgba(255,255,255,0.7)" : T.dim,
           marginLeft:8,
-        }}>{open ? "â–²" : "â–¼ field test"}</span>
+        }}>{open ? "^" : "v field test"}</span>
       </button>
       {open && (
         <div style={{
@@ -1535,10 +1610,10 @@ function RockForm({ state:s, dispatch, onResidualSoil }) {
       </CardSection>
     </Card>
 
-    <SectionLabel>Rock Name âœ±</SectionLabel>
+    <SectionLabel>Rock Name *</SectionLabel>
     <Card>
       <CardSection>
-        <FieldLabel>Tap name to select Â· tap again to see ID tips</FieldLabel>
+        <FieldLabel>Tap name to select - tap again to see ID tips</FieldLabel>
         <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
           {ROCK_NAMES_COMMON.map(item => (
             <HintPill key={item.v}
@@ -1553,7 +1628,7 @@ function RockForm({ state:s, dispatch, onResidualSoil }) {
         <FieldLabel>Other rock name</FieldLabel>
         <input type="text" value={s.rockname_custom}
           onChange={e => dispatch({field:"rockname_custom",value:e.target.value})}
-          placeholder="Type rock nameâ€¦"
+          placeholder="Type rock name..."
           style={{ width:"100%", background:T.surface2, border:`1.5px solid ${T.border}`,
             borderRadius:8, color:T.text, fontFamily:T.mono, fontSize:16,
             padding:"11px 12px", outline:"none" }} />
@@ -1563,7 +1638,7 @@ function RockForm({ state:s, dispatch, onResidualSoil }) {
     <SectionLabel>Strength</SectionLabel>
     <Card>
       <CardSection last>
-        <FieldLabel>Tap to select Â· tap again to see field test</FieldLabel>
+        <FieldLabel>Tap to select - tap again to see field test</FieldLabel>
         <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
           {ROCK_STRENGTH.map(item => (
             <HintPill key={item.v}
@@ -1590,7 +1665,7 @@ function RockForm({ state:s, dispatch, onResidualSoil }) {
   </>;
 }
 
-// â”€â”€â”€ HISTORY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- HISTORY ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 function HistoryScreen({ records, onDelete, onReload }) {
   if (!records.length) return (
     <div style={{ textAlign:"center", padding:"60px 24px",
@@ -1607,11 +1682,11 @@ function HistoryScreen({ records, onDelete, onReload }) {
         const accent = isSoil ? T.accent : T.rock;
         const topF   = parseFloat(r.top||0).toFixed(2);
         const baseF  = r.base ? parseFloat(r.base).toFixed(2) : null;
-        const depth  = baseF ? `${topF}â€“${baseF}m` : `${topF}m`;
+        const depth  = baseF ? `${topF}-${baseF}m` : `${topF}m`;
         const date   = r.created_at
           ? new Date(r.created_at).toLocaleString("en-NZ",
               { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })
-          : "â€”";
+          : " - ";
         return (
           <div key={r.id} style={{
             background:T.surface, margin:"0 12px 10px",
@@ -1642,7 +1717,7 @@ function HistoryScreen({ records, onDelete, onReload }) {
               <button onClick={() => onDelete(r.id)} style={{
                 background:"none", border:"none", color:T.dim,
                 fontSize:22, cursor:"pointer", padding:"0 2px", lineHeight:1 }}>
-                Ã—
+                x
               </button>
             </div>
             <div style={{ padding:"10px 14px", fontFamily:T.mono,
@@ -1733,7 +1808,7 @@ function GeoModule({ activeJob, showToast, syncTick }) {
     else setRockState({...GEO_ROCK_INIT, r_top:nextTop});
     if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
     await loadRecords();
-    showToast("Saved âœ“");
+    showToast("Saved OK");
   };
 
   const handleDelete  = async id => { await dbDelete("geology",id); await loadRecords(); };
@@ -1746,7 +1821,7 @@ function GeoModule({ activeJob, showToast, syncTick }) {
       else { setRockState({...snap,r_top:nextTop,r_base:""}); setGeoMode("rock"); }
       setGeoTab("entry");
       if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
-      showToast("Loaded â€” update depth and save");
+      showToast("Loaded - update depth and save");
     } catch(e) { showToast("Could not reload"); }
   };
 
@@ -1837,7 +1912,7 @@ function GeoModule({ activeJob, showToast, syncTick }) {
             <div style={{ padding:"9px 12px", fontFamily:T.sans, fontSize:14,
               lineHeight:1.65, color:desc?T.text:T.dim,
               fontStyle:desc?"normal":"italic", minHeight:40 }}>
-              {desc||"Select material type to beginâ€¦"}
+              {desc||"Select material type to begin..."}
             </div>
           </div>
         </div>
@@ -1848,7 +1923,7 @@ function GeoModule({ activeJob, showToast, syncTick }) {
           {geoMode==="soil"
             ? <SoilForm state={soilState} dispatch={dispatchSoil}/>
             : <RockForm state={rockState} dispatch={dispatchRock}
-                onResidualSoil={()=>{setGeoMode("soil");showToast("Residual soil â€” describe as soil");}}/>
+                onResidualSoil={()=>{setGeoMode("soil");showToast("Residual soil - describe as soil");}}/>
           }
           <div style={{ padding:"8px 12px 0" }}>
             <button onClick={handleSave} style={{ width:"100%", padding:16,
@@ -1869,9 +1944,9 @@ function GeoModule({ activeJob, showToast, syncTick }) {
   );
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// SPT MODULE â€” Standard Penetration Test
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// =======================================================================
+// SPT MODULE - Standard Penetration Test
+// =======================================================================
 
 const SPT_CFG = { incrMm:75, seatCount:2, total:6, hardLimit:60, colour:T.blue };
 
@@ -1904,7 +1979,7 @@ function SPTHistoryScreen({ records, onDelete }) {
               }
               <span style={{ fontFamily:T.sans, fontSize:11, color:T.dim, marginLeft:"auto" }}>{date}</span>
               <button onClick={()=>onDelete(r.id)} style={{ background:"none", border:"none",
-                color:T.dim, fontSize:20, cursor:"pointer", padding:"0 2px" }}>Ã—</button>
+                color:T.dim, fontSize:20, cursor:"pointer", padding:"0 2px" }}>x</button>
             </div>
             <div style={{ padding:"8px 14px 10px", display:"flex", gap:12, flexWrap:"wrap" }}>
               {["S1","S2","T1","T2","T3","T4"].map((label,idx) => {
@@ -1917,7 +1992,7 @@ function SPTHistoryScreen({ records, onDelete }) {
                       color:isSeat?T.dim:T.blue, marginBottom:2 }}>{label}</div>
                     <div style={{ fontFamily:T.sans, fontSize:16, fontWeight:700,
                       color:blow==null?T.border2:isSeat?T.dim:T.blue }}>
-                      {blow!=null?blow:"â€”"}</div>
+                      {blow!=null?blow:" - "}</div>
                     {pen < 75 && blow!=null && (
                       <div style={{ fontFamily:T.sans, fontSize:9, color:T.red }}>{pen}mm</div>
                     )}
@@ -2037,7 +2112,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
 
   const handleRefusalConfirm = () => {
     const mm = parseInt(refusalMm);
-    if (!mm||mm<1||mm>75) { setRefusalErr("Enter 1â€“75mm"); return; }
+    if (!mm||mm<1||mm>75) { setRefusalErr("Enter 1-75mm"); return; }
     setState(prev => {
       const pens=[...prev.penetration];
       while(pens.length<=prev.refusalIncr-1) pens.push(cfg.incrMm);
@@ -2097,7 +2172,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
         alignItems:"center",justifyContent:"center",
         background:T.surface2,padding:16,gap:8 }}>
         <div style={{ fontFamily:T.sans,fontSize:11,color:T.dim,letterSpacing:"0.15em" }}>
-          BLOWS / {cfg.incrMm}mm â€” {i<seat?`SEATING ${i+1}`:`TEST ${i-seat+1}`}
+          BLOWS / {cfg.incrMm}mm - {i<seat?`SEATING ${i+1}`:`TEST ${i-seat+1}`}
         </div>
         <div style={{ fontFamily:T.sans,fontWeight:800,color:blowColor,lineHeight:1,
           fontSize:"clamp(80px,22vw,130px)" }}>
@@ -2125,7 +2200,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
           <div style={{ background:T.white,borderRadius:12,padding:24,
             width:"100%",maxWidth:340,border:`2px solid ${T.red}`,textAlign:"center" }}>
             <div style={{ fontFamily:T.sans,fontSize:24,fontWeight:800,
-              color:T.red,marginBottom:6 }}>âš  REFUSAL</div>
+              color:T.red,marginBottom:6 }}>! REFUSAL</div>
             <div style={{ fontFamily:T.sans,fontSize:13,color:T.dim,
               marginBottom:16,lineHeight:1.5 }}>
               60 blows reached. Enter actual penetration achieved (mm):</div>
@@ -2142,7 +2217,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
             <button onClick={handleRefusalConfirm} style={{ width:"100%",padding:16,
               background:T.red,border:"none",borderRadius:8,fontFamily:T.sans,
               fontSize:16,fontWeight:700,color:T.white,cursor:"pointer" }}>
-              Confirm âœ“</button>
+              Confirm OK</button>
           </div>
         </div>
       )}
@@ -2155,7 +2230,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
             color:T.white,border:"none",borderRadius:12,fontFamily:T.sans,
             fontSize:16,fontWeight:700,cursor:"pointer",
             boxShadow:`0 4px 12px ${T.blue}44`,
-            WebkitTapHighlightColor:"transparent" }}>Save Test âœ“</button>
+            WebkitTapHighlightColor:"transparent" }}>Save Test OK</button>
         ) : <>
           {!micMode&&(
             <button onPointerDown={registerBlow} style={{ width:"100%",padding:18,
@@ -2175,7 +2250,7 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
               background:i>=cfg.total-1?T.amber:T.blue,color:T.white,border:"none",
               borderRadius:10,fontFamily:T.sans,fontSize:14,fontWeight:700,
               cursor:"pointer",WebkitTapHighlightColor:"transparent" }}>
-              {i>=cfg.total-1?"FINISH TEST âœ“":"NEXT INCREMENT â–¶"}</button>
+              {i>=cfg.total-1?"FINISH TEST OK":"NEXT INCREMENT >"}</button>
           </div>
         </>}
       </div>
@@ -2235,7 +2310,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
     setTestState({ top:nextTop, blows:[], penetration:[],
       currentIncr:0, refusal:false, refusalIncr:null, complete:false });
     setSptTab("setup");
-    showToast(`Saved â€” N=${nValue??`REFUSAL`}`);
+    showToast(`Saved - N=${nValue??`REFUSAL`}`);
   };
 
   const handleDelete = async id => { await dbDelete("spt",id); await loadRecords(); };
@@ -2248,7 +2323,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
       <div style={{ background:T.white,borderBottom:`1px solid ${T.border}`,
         flexShrink:0,boxShadow:"0 1px 4px rgba(0,0,0,0.06)" }}>
         <div style={{ display:"flex" }}>
-          {[["setup", sptTab==="test"?"â—€ Test":"Setup"],
+          {[["setup", sptTab==="test"?"< Test":"Setup"],
             ["history",`History (${records.length})`]].map(([id,label])=>{
             const active=sptTab===id||(sptTab==="test"&&id==="setup");
             return (
@@ -2284,16 +2359,16 @@ function SPTModule({ activeJob, showToast, syncTick }) {
             <CardSection last>
               <div style={{ fontFamily:T.sans,fontSize:13,color:T.dim,lineHeight:1.9 }}>
                 <b style={{ color:T.text }}>Standard:</b> NZS 4402<br/>
-                <b style={{ color:T.text }}>Seating:</b> 2 Ã— 75mm increments (S1, S2) â€” not counted<br/>
-                <b style={{ color:T.text }}>Test drive:</b> 4 Ã— 75mm increments (T1â€“T4)<br/>
-                <b style={{ color:T.text }}>N value:</b> Sum of T1â€“T4 blows<br/>
-                <b style={{ color:T.text }}>Refusal:</b> 60 cumulative blows â†’ enter actual depth
+                <b style={{ color:T.text }}>Seating:</b> 2 x 75mm increments (S1, S2) - not counted<br/>
+                <b style={{ color:T.text }}>Test drive:</b> 4 x 75mm increments (T1-T4)<br/>
+                <b style={{ color:T.text }}>N value:</b> Sum of T1-T4 blows<br/>
+                <b style={{ color:T.text }}>Refusal:</b> 60 cumulative blows -> enter actual depth
               </div>
             </CardSection>
           </Card>
           {records.length>0&&(
             <div style={{ padding:"0 16px 8px",fontFamily:T.sans,fontSize:12,color:T.dim }}>
-              Last test at {parseFloat(records[records.length-1]?.top||0).toFixed(2)}m â€”
+              Last test at {parseFloat(records[records.length-1]?.top||0).toFixed(2)}m - 
               {" "}N={records[records.length-1]?.nValue??"REFUSAL"}
             </div>
           )}
@@ -2302,7 +2377,7 @@ function SPTModule({ activeJob, showToast, syncTick }) {
               background:T.blue,color:T.white,border:"none",borderRadius:12,
               fontFamily:T.sans,fontSize:17,fontWeight:700,cursor:"pointer",
               boxShadow:`0 4px 12px ${T.blue}44`,
-              WebkitTapHighlightColor:"transparent" }}>Start SPT Test â–¶</button>
+              WebkitTapHighlightColor:"transparent" }}>Start SPT Test ></button>
           </div>
         </div>
       )}
@@ -2322,10 +2397,10 @@ function SPTModule({ activeJob, showToast, syncTick }) {
     </div>
   );
 }
-// â”€â”€â”€ CORE MODULE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Rock core recovery â€” simplified field-first workflow
+// --------- CORE MODULE ------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Rock core recovery - simplified field-first workflow
 
-// Method â†’ diameter auto-fill (null = open entry, no auto-fill)
+// Method -> diameter auto-fill (null = open entry, no auto-fill)
 const CORE_METHODS = [
   { v:"HA",    label:"HA",    diameter:null  },
   { v:"NDD",   label:"NDD",   diameter:null  },
@@ -2383,13 +2458,13 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   const set = useCallback((field, value) =>
     setForm(p => ({ ...p, [field]: value })), []);
 
-  // Method selection â€” auto-fills diameter if defined
+  // Method selection - auto-fills diameter if defined
   const selectMethod = useCallback((v) => {
     const m = CORE_METHODS.find(x => x.v === v);
     setForm(p => ({
       ...p,
       Method: p.Method === v ? "" : v,
-      Diameter: p.Method === v ? p.Diameter  // deselecting â€” keep current diameter
+      Diameter: p.Method === v ? p.Diameter  // deselecting - keep current diameter
                : (m?.diameter != null ? String(m.diameter) : p.Diameter),
     }));
   }, []);
@@ -2435,7 +2510,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
     const nextTop = parseFloat(form.base).toFixed(2);
     setForm({ ...CORE_INIT, top: nextTop, Method: form.Method, Diameter: form.Diameter });
     if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
-    showToast("Core run saved âœ“");
+    showToast("Core run saved OK");
   };
 
   const handleDelete = async (id) => {
@@ -2472,7 +2547,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
     showToast("CSV exported");
   };
 
-  // â”€â”€ Derived values â”€â”€
+  // ------ Derived values ------
   const runLength = (form.top !== "" && form.base !== "")
     ? parseFloat(form.base) - parseFloat(form.top) : null;
   const tcrPct = calcPct(form.TCRLength, runLength);
@@ -2516,7 +2591,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
             <div style={{ marginLeft:"auto", display:"flex", gap:6, paddingBottom:2 }}>
               <button onClick={handleExport} style={{ padding:"6px 12px", borderRadius:7,
                 background:T.rock, color:T.white, border:"none", fontFamily:T.sans,
-                fontSize:12, fontWeight:700, cursor:"pointer" }}>â†“ CSV</button>
+                fontSize:12, fontWeight:700, cursor:"pointer" }}>down CSV</button>
               {confirmClear ? (
                 <div style={{ display:"flex", gap:5, alignItems:"center" }}>
                   <span style={{ fontFamily:T.sans, fontSize:12, color:T.red, fontWeight:600 }}>Sure?</span>
@@ -2539,7 +2614,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
         </div>
       </div>
 
-      {/* â”€â”€ ENTRY TAB â”€â”€ */}
+      {/* ------ ENTRY TAB ------ */}
       {tab==="entry" && (
         <div ref={formScrollRef} style={{ flex:1, overflowY:"auto", paddingBottom:24 }}>
 
@@ -2574,7 +2649,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
             </CardSection>
           </Card>
 
-          {/* Top / Base / TCR â€” one row */}
+          {/* Top / Base / TCR - one row */}
           <SectionLabel>Depth &amp; Recovery</SectionLabel>
           <Card>
             <CardSection last>
@@ -2598,7 +2673,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                   <FieldLabel>TCR (mm)</FieldLabel>
                   <input type="number" value={form.TCRLength} step="1" min="0"
                     onChange={e=>set("TCRLength",e.target.value)}
-                    placeholder="â€”" inputMode="numeric" style={depthInp}/>
+                    placeholder="-" inputMode="numeric" style={depthInp}/>
                 </div>
                 {/* Live TCR % */}
                 <div style={{
@@ -2617,7 +2692,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                   }}>
                     <div style={{ fontFamily:T.sans, fontSize:20, fontWeight:800,
                       lineHeight:1, color: tcrPct !== null ? tcrCol : T.dim }}>
-                      {tcrPct !== null ? tcrPct+"%" : "â€”"}
+                      {tcrPct !== null ? tcrPct+"%" : " - "}
                     </div>
                     {/* mini bar */}
                     {tcrPct !== null && (
@@ -2639,7 +2714,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
               )}
               {runLength !== null && runLength <= 0 && (
                 <div style={{ marginTop:8, fontFamily:T.sans, fontSize:12, color:T.red }}>
-                  âš  Base must be greater than Top
+                  ! Base must be greater than Top
                 </div>
               )}
             </CardSection>
@@ -2724,7 +2799,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
             <CardSection last>
               <textarea value={form.Remarks} rows={3}
                 onChange={e=>set("Remarks",e.target.value)}
-                placeholder="Core condition, fracture notes, loss zones, colour changesâ€¦"
+                placeholder="Core condition, fracture notes, loss zones, colour changes..."
                 style={{ width:"100%", background:T.surface2,
                   border:`1.5px solid ${T.border}`, borderRadius:8,
                   color:T.text, fontFamily:T.sans, fontSize:14,
@@ -2741,7 +2816,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
         </div>
       )}
 
-      {/* â”€â”€ HISTORY TAB â”€â”€ */}
+      {/* ------ HISTORY TAB ------ */}
       {tab==="history" && (
         <div style={{ flex:1, overflowY:"auto", padding:"8px 0 24px" }}>
           {records.length === 0 ? (
@@ -2757,7 +2832,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                 borderRadius:10, boxShadow:T.shadow, padding:"10px 14px",
                 display:"flex", gap:0 }}>
                 {[["Runs",records.length],["Total",totalRun.toFixed(1)+"m"],
-                  ["Avg TCR", avgTCR!==null ? avgTCR+"%" : "â€”"]].map(([label,value],idx) => (
+                  ["Avg TCR", avgTCR!==null ? avgTCR+"%" : " - "]].map(([label,value],idx) => (
                   <div key={label} style={{ flex:1, textAlign:"center",
                     borderRight:idx<2?`1px solid ${T.border}`:"none" }}>
                     <div style={{ fontFamily:T.sans, fontSize:10, color:T.dim,
@@ -2788,7 +2863,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                       )}
                       <span style={{ fontFamily:T.sans, fontSize:14,
                         fontWeight:700, color:T.rock }}>
-                        {parseFloat(r.top).toFixed(2)}â€“{parseFloat(r.base).toFixed(2)}m
+                        {parseFloat(r.top).toFixed(2)}-{parseFloat(r.base).toFixed(2)}m
                       </span>
                       <span style={{ fontFamily:T.sans, fontSize:12, color:T.dim }}>
                         {rl.toFixed(2)}m
@@ -2796,13 +2871,13 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                       {r.Diameter && (
                         <span style={{ fontFamily:T.sans, fontSize:11, color:T.dim,
                           background:T.surface2, padding:"2px 6px", borderRadius:4 }}>
-                          âŒ€{r.Diameter}mm
+                          Dia {r.Diameter}mm
                         </span>
                       )}
                       <button onClick={() => handleDelete(r.id)} style={{
                         background:"none", border:"none", color:T.dim,
                         fontSize:20, cursor:"pointer", padding:"0 2px",
-                        lineHeight:1, marginLeft:"auto" }}>Ã—</button>
+                        lineHeight:1, marginLeft:"auto" }}>x</button>
                     </div>
                     {/* TCR row */}
                     <div style={{ padding:"10px 12px",
@@ -2826,7 +2901,7 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                       </div>
                       <div style={{ fontFamily:T.sans, fontSize:26, fontWeight:800,
                         color:col, minWidth:58, textAlign:"right" }}>
-                        {tcrPct !== null ? tcrPct+"%" : "â€”"}
+                        {tcrPct !== null ? tcrPct+"%" : " - "}
                       </div>
                     </div>
                     {/* Meta row */}
@@ -2874,10 +2949,10 @@ function CoreModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   );
 }
 
-// â”€â”€â”€ PHOTOS MODULE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- PHOTOS MODULE ------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 const PHOTO_CATEGORIES = [
-  { id:"site_setup",  label:"Site Setup",    hint:"Before drilling â€” site access, layout, surrounds",  icon:"map-pin"   },
+  { id:"site_setup",  label:"Site Setup",    hint:"Before drilling - site access, layout, surrounds",  icon:"map-pin"   },
   { id:"pre_drill",   label:"Pre-Drill",     hint:"Condition of area before hole commenced",            icon:"eye"       },
   { id:"core_box",    label:"Core Box",      hint:"Core tray photos in sequence",                      icon:"layers"    },
   { id:"post_drill",  label:"Post-Drill",    hint:"Completed hole, reinstatement, grouting",            icon:"check-circle"},
@@ -2964,7 +3039,7 @@ function PhotoThumbnail({ record, onDelete }) {
             style={{ maxWidth:"100%", maxHeight:"80vh", borderRadius:8, objectFit:"contain" }}/>
           <div style={{ marginTop:12, fontFamily:T.sans, fontSize:13,
             color:"rgba(255,255,255,0.7)", textAlign:"center" }}>
-            {cat?.label}{record.box_number ? ` â€” Box ${record.box_number}` : ""}
+            {cat?.label}{record.box_number ? ` - Box ${record.box_number}` : ""}
             <span style={{ marginLeft:12, fontSize:11, opacity:0.5 }}>
               {record.created_at ? new Date(record.created_at).toLocaleString("en-NZ",
                 {day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : ""}
@@ -3024,7 +3099,7 @@ function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
     await Promise.all(toSave.map(r => dbPut("photos", r)));
     await loadRecords();
     setLoading(false);
-    showToast(`${toSave.length} photo${toSave.length>1?"s":""} saved âœ“`);
+    showToast(`${toSave.length} photo${toSave.length>1?"s":""} saved OK`);
   };
 
   const handleDelete = async (id) => {
@@ -3089,7 +3164,7 @@ function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
               WebkitTapHighlightColor:"transparent",
             }}>
               <PhotoIcon name="download" size={12} color={T.white}/>
-              {exporting ? "Exportingâ€¦" : "Export JSON"}
+              {exporting ? "Exporting..." : "Export JSON"}
             </button>
           )}
         </div>
@@ -3143,7 +3218,7 @@ function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
           })}
         </div>
 
-        {/* Box number input â€” only for core_box */}
+        {/* Box number input - only for core_box */}
         {activeCategory === "core_box" && (
           <>
             <SectionLabel>Box Number</SectionLabel>
@@ -3171,7 +3246,7 @@ function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
         {/* Capture buttons */}
         {activeCategory && (
           <>
-            <SectionLabel>Add Photo{activeCategory==="core_box"?` â€” Box ${boxNumber}`:""}</SectionLabel>
+            <SectionLabel>Add Photo{activeCategory==="core_box"?` - Box ${boxNumber}`:""}</SectionLabel>
             <div style={{ padding:"0 12px", display:"flex", gap:8 }}>
               {/* Camera */}
               <button onClick={() => cameraRef.current?.click()}
@@ -3203,7 +3278,7 @@ function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
             {loading && (
               <div style={{ textAlign:"center", padding:"12px",
                 fontFamily:T.sans, fontSize:13, color:T.dim }}>
-                Processing photo{loading ? "s" : ""}â€¦
+                Processing photo{loading ? "s" : ""}...
               </div>
             )}
             {/* Hidden file inputs */}
@@ -3240,11 +3315,11 @@ function PhotosModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   );
 }
 
-// â”€â”€â”€ CONSUMABLES MODULE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- CONSUMABLES MODULE ---------------------------------------------------------------------------------------------------------------------------------------------
 
 const CONSUMABLE_UNITS = ["m","L","kg","each","box","bag","drum","set"];
 
-// Placeholder categories â€” to be populated with real items later
+// Placeholder categories - to be populated with real items later
 const CONSUMABLE_CATEGORIES = [
   {
     id:"drilling_fluid", label:"Drilling Fluid",
@@ -3318,7 +3393,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
     await loadRecords();
     // Keep category selected, reset rest
     setForm(p => ({ ...CONS_INIT, category: p.category }));
-    showToast("Saved âœ“");
+    showToast("Saved OK");
   };
 
   const handleDelete = async (id) => {
@@ -3381,7 +3456,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
               <button onClick={handleExport} style={{ padding:"6px 12px", borderRadius:7,
                 background:accentC, color:T.white, border:"none",
                 fontFamily:T.sans, fontSize:12, fontWeight:700, cursor:"pointer" }}>
-                â†“ CSV
+                down CSV
               </button>
               {confirmClear ? (
                 <div style={{ display:"flex", gap:5, alignItems:"center" }}>
@@ -3466,7 +3541,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                     <FieldLabel>Item name</FieldLabel>
                     <input type="text" value={form.item_custom}
                       onChange={e => set("item_custom", e.target.value)}
-                      placeholder="Enter item nameâ€¦"
+                      placeholder="Enter item name..."
                       style={{ width:"100%", background:T.surface2,
                         border:`1px solid ${T.border}`, borderRadius:8,
                         color:T.text, fontFamily:T.sans, fontSize:15,
@@ -3517,7 +3592,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                 <CardSection last>
                   <textarea value={form.remarks} rows={2}
                     onChange={e => set("remarks", e.target.value)}
-                    placeholder="Optional notesâ€¦"
+                    placeholder="Optional notes..."
                     style={{ width:"100%", background:T.surface2,
                       border:`1px solid ${T.border}`, borderRadius:8,
                       color:T.text, fontFamily:T.sans, fontSize:14,
@@ -3568,7 +3643,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                       <div style={{ fontFamily:T.sans, fontSize:12,
                         color:T.dim, marginTop:1 }}>
                         {cat?.label}
-                        {r.remarks ? ` Â· ${r.remarks}` : ""}
+                        {r.remarks ? ` - ${r.remarks}` : ""}
                       </div>
                     </div>
                     <div style={{ textAlign:"right", flexShrink:0 }}>
@@ -3582,7 +3657,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
                     <button onClick={() => handleDelete(r.id)} style={{
                       background:"none", border:"none", color:T.dim,
                       fontSize:20, cursor:"pointer", padding:"0 2px",
-                      lineHeight:1, flexShrink:0 }}>Ã—</button>
+                      lineHeight:1, flexShrink:0 }}>x</button>
                   </div>
                 );
               })}
@@ -3595,7 +3670,7 @@ function ConsumablesModule({ activeJob, onGoToJobs, showToast, syncTick }) {
 }
 
 
-// â”€â”€â”€ INSTALLATIONS MODULE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- INSTALLATIONS MODULE ---------------------------------------------------------------------------------------------------------------------------------------
 
 const INSTALL_TYPES = [
   { v:"standpipe_piezometer", l:"Standpipe Piezometer",     abbr:"SP"  },
@@ -3617,7 +3692,7 @@ const BACKFILL_MATERIALS = [
   { v:"native_backfill",   l:"Native Backfill / Cuttings", unit:"m" },
 ];
 
-const BACKFILL_UNITS = ["kg","L","m","bags","mÂ³"];
+const BACKFILL_UNITS = ["kg","L","m","bags","m3"];
 
 const SURFACE_COMPLETIONS = [
   { v:"flush_toby",   l:"Flush Toby Box"          },
@@ -3659,7 +3734,7 @@ const newInstrument = () => ({
   remarks:        "",
 });
 
-// â”€â”€ Small depth input â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------ Small depth input ------------------------------------------------------------------------------------------------------------------------------------------------------
 function DepthInput({ label, value, onChange, placeholder }) {
   return (
     <div style={{ flex:1 }}>
@@ -3667,7 +3742,7 @@ function DepthInput({ label, value, onChange, placeholder }) {
         color:T.dim, marginBottom:4, letterSpacing:"0.02em" }}>{label}</div>
       <input type="number" value={value} step="0.01" min="0"
         inputMode="decimal" onChange={e => onChange(e.target.value)}
-        placeholder={placeholder||"â€”"}
+        placeholder={placeholder||"-"}
         style={{ width:"100%", background:T.surface2,
           border:`1px solid ${T.border}`, borderRadius:7,
           color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
@@ -3677,7 +3752,7 @@ function DepthInput({ label, value, onChange, placeholder }) {
   );
 }
 
-// â”€â”€ Backfill layer row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------ Backfill layer row ---------------------------------------------------------------------------------------------------------------------------------------------------
 function BackfillLayerRow({ layer, idx, onChange, onDelete, isOnly }) {
   const selMat = BACKFILL_MATERIALS.find(m => m.v === layer.material);
   return (
@@ -3692,7 +3767,7 @@ function BackfillLayerRow({ layer, idx, onChange, onDelete, isOnly }) {
         {!isOnly && (
           <button onClick={onDelete}
             style={{ background:"none", border:"none", color:T.dim,
-              fontSize:18, cursor:"pointer", lineHeight:1, padding:"0 2px" }}>Ã—</button>
+              fontSize:18, cursor:"pointer", lineHeight:1, padding:"0 2px" }}>x</button>
         )}
       </div>
 
@@ -3714,7 +3789,7 @@ function BackfillLayerRow({ layer, idx, onChange, onDelete, isOnly }) {
       {/* Depth row */}
       <div style={{ display:"flex", gap:6, marginBottom:8 }}>
         <DepthInput label="Top (m)"  value={layer.top}  onChange={v => onChange("top",v)}  placeholder="0.00"/>
-        <div style={{ color:T.dim, fontSize:16, paddingTop:24 }}>â†“</div>
+        <div style={{ color:T.dim, fontSize:16, paddingTop:24 }}>down</div>
         <DepthInput label="Base (m)" value={layer.base} onChange={v => onChange("base",v)} placeholder="1.00"/>
       </div>
 
@@ -3754,7 +3829,7 @@ function BackfillLayerRow({ layer, idx, onChange, onDelete, isOnly }) {
   );
 }
 
-// â”€â”€ Single instrument form â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------ Single instrument form ---------------------------------------------------------------------------------------------------------------------------------------
 function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
   const set = (f, v) => onChange({ ...inst, [f]: v });
   const accentI = "#10b981";
@@ -3792,7 +3867,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
           color:accentI }}>
           Instrument {idx + 1}
           {inst.ref_id && <span style={{ marginLeft:8, fontWeight:500,
-            color:T.dim }}>â€” {inst.ref_id}</span>}
+            color:T.dim }}> - {inst.ref_id}</span>}
         </div>
         {!isOnly && (
           <button onClick={onDelete}
@@ -3810,7 +3885,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
         {/* Type */}
         <div style={{ fontFamily:T.sans, fontSize:10, fontWeight:700,
           color:T.dimmer, letterSpacing:"0.1em", textTransform:"uppercase",
-          marginBottom:6 }}>Instrument Type âœ±</div>
+          marginBottom:6 }}>Instrument Type *</div>
         <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:14 }}>
           {INSTALL_TYPES.map(t => (
             <button key={t.v} onClick={() => set("inst_type", inst.inst_type===t.v?"":t.v)}
@@ -3831,7 +3906,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
           marginBottom:6 }}>Reference ID</div>
         <input type="text" value={inst.ref_id}
           onChange={e => set("ref_id", e.target.value)}
-          placeholder="e.g. PZ-01, VWP-Aâ€¦"
+          placeholder="e.g. PZ-01, VWP-A..."
           style={{ width:"100%", background:T.surface2,
             border:`1px solid ${T.border}`, borderRadius:8,
             color:T.text, fontFamily:T.sans, fontSize:15,
@@ -3860,7 +3935,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
               color:T.dim, marginBottom:4 }}>Diameter (mm)</div>
             <input type="number" value={inst.pipe_diameter} inputMode="numeric"
               onChange={e => set("pipe_diameter", e.target.value)}
-              placeholder="â€”"
+              placeholder="-"
               style={{ width:"100%", background:T.surface2,
                 border:`1px solid ${T.border}`, borderRadius:7,
                 color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
@@ -3872,7 +3947,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
               color:T.dim, marginBottom:4 }}>Total length (m)</div>
             <input type="number" value={inst.pipe_length} step="0.01" inputMode="decimal"
               onChange={e => set("pipe_length", e.target.value)}
-              placeholder="â€”"
+              placeholder="-"
               style={{ width:"100%", background:T.surface2,
                 border:`1px solid ${T.border}`, borderRadius:7,
                 color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
@@ -3884,7 +3959,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
               color:T.dim, marginBottom:4 }}>Stick-up (m)</div>
             <input type="number" value={inst.stickup} step="0.01" inputMode="decimal"
               onChange={e => set("stickup", e.target.value)}
-              placeholder="â€”"
+              placeholder="-"
               style={{ width:"100%", background:T.surface2,
                 border:`1px solid ${T.border}`, borderRadius:7,
                 color:T.text, fontFamily:T.sans, fontSize:18, fontWeight:700,
@@ -3910,7 +3985,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
               <div style={{ display:"flex", gap:8, alignItems:"center" }}>
                 <DepthInput label="Top (m)"  value={inst[topF]}
                   onChange={v => set(topF, v)}  placeholder="0.00"/>
-                <div style={{ color:T.dim, fontSize:14, paddingTop:20 }}>â€”</div>
+                <div style={{ color:T.dim, fontSize:14, paddingTop:20 }}> - </div>
                 <DepthInput label="Base (m)" value={inst[baseF]}
                   onChange={v => set(baseF, v)} placeholder="0.00"/>
               </div>
@@ -3963,7 +4038,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
         {inst.surface === "other" && (
           <input type="text" value={inst.surface_other}
             onChange={e => set("surface_other", e.target.value)}
-            placeholder="Describe surface completionâ€¦"
+            placeholder="Describe surface completion..."
             style={{ width:"100%", background:T.surface2,
               border:`1px solid ${T.border}`, borderRadius:8,
               color:T.text, fontFamily:T.sans, fontSize:14,
@@ -3976,7 +4051,7 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
           marginBottom:6, marginTop:8 }}>Remarks</div>
         <textarea value={inst.remarks} rows={2}
           onChange={e => set("remarks", e.target.value)}
-          placeholder="Installation notes, conditions, issuesâ€¦"
+          placeholder="Installation notes, conditions, issues..."
           style={{ width:"100%", background:T.surface2,
             border:`1px solid ${T.border}`, borderRadius:8,
             color:T.text, fontFamily:T.sans, fontSize:14,
@@ -3987,14 +4062,14 @@ function InstrumentForm({ inst, onChange, onDelete, idx, isOnly }) {
   );
 }
 
-// â”€â”€ History card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------ History card ---------------------------------------------------------------------------------------------------------------------------------------------------------------------
 function InstallHistoryCard({ record, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const accentI = "#10b981";
   const date = record.created_at
     ? new Date(record.created_at).toLocaleString("en-NZ",
         { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })
-    : "â€”";
+    : " - ";
 
   return (
     <div style={{ background:T.surface, margin:"0 12px 8px",
@@ -4025,11 +4100,11 @@ function InstallHistoryCard({ record, onDelete }) {
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <span style={{ fontFamily:T.sans, fontSize:11, color:T.dim }}>
-            {expanded ? "â–²" : "â–¼"}
+            {expanded ? "^" : "v"}
           </span>
           <button onClick={e => { e.stopPropagation(); onDelete(record.id); }}
             style={{ background:"none", border:"none", color:T.dim,
-              fontSize:20, cursor:"pointer", padding:"0 2px", lineHeight:1 }}>Ã—</button>
+              fontSize:20, cursor:"pointer", padding:"0 2px", lineHeight:1 }}>x</button>
         </div>
       </button>
 
@@ -4042,7 +4117,7 @@ function InstallHistoryCard({ record, onDelete }) {
             padding:"10px 14px" }}>
             <div style={{ fontFamily:T.sans, fontSize:13, fontWeight:700,
               color:accentI, marginBottom:6 }}>
-              {t?.l || inst.inst_type}{inst.ref_id ? ` â€” ${inst.ref_id}` : ""}
+              {t?.l || inst.inst_type}{inst.ref_id ? ` - ${inst.ref_id}` : ""}
             </div>
             {/* Pipe */}
             {(inst.pipe_material||inst.pipe_diameter||inst.pipe_length) && (
@@ -4051,7 +4126,7 @@ function InstallHistoryCard({ record, onDelete }) {
                 Pipe: {[inst.pipe_material, inst.pipe_diameter ? inst.pipe_diameter+"mm dia" : null,
                   inst.pipe_length ? inst.pipe_length+"m length" : null,
                   inst.stickup ? inst.stickup+"m stickup" : null
-                ].filter(Boolean).join(" Â· ")}
+                ].filter(Boolean).join(" - ")}
               </div>
             )}
             {/* Depths */}
@@ -4061,7 +4136,7 @@ function InstallHistoryCard({ record, onDelete }) {
               inst[tf] || inst[bf] ? (
                 <div key={lbl} style={{ fontFamily:T.sans, fontSize:12,
                   color:T.dim, marginBottom:2 }}>
-                  {lbl}: {inst[tf]||"?"}â€“{inst[bf]||"?"}m
+                  {lbl}: {inst[tf]||"?"}-{inst[bf]||"?"}m
                 </div>
               ) : null
             )}
@@ -4071,15 +4146,15 @@ function InstallHistoryCard({ record, onDelete }) {
               return (
                 <div key={li} style={{ fontFamily:T.sans, fontSize:12,
                   color:T.dim, marginBottom:2 }}>
-                  â†³ {m?.l || l.material}{l.top||l.base ? ` (${l.top||"?"}â€“${l.base||"?"}m)` : ""}
-                  {l.qty ? ` Â· ${l.qty} ${l.unit}` : ""}
+                  -> {m?.l || l.material}{l.top||l.base ? ` (${l.top||"?"}-${l.base||"?"}m)` : ""}
+                  {l.qty ? ` - ${l.qty} ${l.unit}` : ""}
                 </div>
               );
             })}
             {/* Surface */}
             {surf && <div style={{ fontFamily:T.sans, fontSize:12,
               color:T.dim, marginTop:4 }}>
-              Surface: {surf.l}{inst.surface_other ? ` â€” ${inst.surface_other}` : ""}
+              Surface: {surf.l}{inst.surface_other ? ` - ${inst.surface_other}` : ""}
             </div>}
             {inst.remarks?.trim() && (
               <div style={{ fontFamily:T.sans, fontSize:12, color:T.dim,
@@ -4092,7 +4167,7 @@ function InstallHistoryCard({ record, onDelete }) {
   );
 }
 
-// â”€â”€ Main module â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ------ Main module ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 function InstallationsModule({ activeJob, onGoToJobs, showToast, syncTick }) {
   if (!activeJob) return <NoJobGuard moduleName="Installations" onGoToJobs={onGoToJobs}/>;
 
@@ -4143,7 +4218,7 @@ function InstallationsModule({ activeJob, onGoToJobs, showToast, syncTick }) {
     await loadRecords();
     setInstruments([newInstrument()]);
     if (formScrollRef.current) formScrollRef.current.scrollTop = 0;
-    showToast("Installation saved âœ“");
+    showToast("Installation saved OK");
   };
 
   const handleDelete = async (id) => {
@@ -4193,7 +4268,7 @@ function InstallationsModule({ activeJob, onGoToJobs, showToast, syncTick }) {
               <button onClick={handleExport}
                 style={{ padding:"6px 12px", borderRadius:7, background:accentI,
                   color:T.white, border:"none", fontFamily:T.sans,
-                  fontSize:12, fontWeight:700, cursor:"pointer" }}>â†“ JSON</button>
+                  fontSize:12, fontWeight:700, cursor:"pointer" }}>down JSON</button>
               {confirmClear ? (
                 <div style={{ display:"flex", gap:5, alignItems:"center" }}>
                   <span style={{ fontFamily:T.sans, fontSize:12, color:T.red, fontWeight:600 }}>Sure?</span>
@@ -4271,7 +4346,7 @@ function InstallationsModule({ activeJob, onGoToJobs, showToast, syncTick }) {
 }
 
 
-// â”€â”€â”€ PLACEHOLDER MODULE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- PLACEHOLDER MODULE ------------------------------------------------------------------------------------------------------------------------------------------
 
 function PlaceholderModule({ name, icon, color, activeJob, onGoToJobs }) {
   if (!activeJob) return <NoJobGuard moduleName={name} onGoToJobs={onGoToJobs} />;
@@ -4285,13 +4360,13 @@ function PlaceholderModule({ name, icon, color, activeJob, onGoToJobs }) {
       <div style={{ fontFamily:T.sans, fontSize:13, color:T.accent,
         marginBottom:8 }}>{activeJob.PROJ_ID} / {activeJob.POINT_ID}</div>
       <div style={{ fontFamily:T.sans, fontSize:14, color:T.dim, lineHeight:1.6 }}>
-        Coming soon â€” this module is under development.
+        Coming soon - this module is under development.
       </div>
     </div>
   );
 }
 
-// â”€â”€â”€ ROOT APP â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// --------- ROOT APP ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 const INSTALL_DISMISS_KEY = "substrata_install_prompt_dismissed";
 
 function LoginScreen({ onLogin, loading, error }) {
@@ -4668,7 +4743,7 @@ function App() {
     <div style={{ background:T.bg, height:"var(--app-height, 100dvh)", display:"flex",
       flexDirection:"column", color:T.text, fontFamily:T.sans, overflow:"hidden" }}>
 
-      {/* â”€â”€ HEADER â”€â”€ dark nav style */}
+      {/* ------ HEADER ------ dark nav style */}
       <div style={{ background:T.nav, padding:"11px 16px 10px",
         flexShrink:0, display:"flex", alignItems:"center", gap:12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
@@ -4730,12 +4805,12 @@ function App() {
         </button>
       </div>
 
-      {/* â”€â”€ MODULE CONTENT â”€â”€ */}
+      {/* ------ MODULE CONTENT ------ */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
         {renderModule()}
       </div>
 
-      {/* â”€â”€ TAB BAR â€” dark SubStrata style â”€â”€ */}
+      {/* ------ TAB BAR - dark SubStrata style ------ */}
       <div style={{ background:T.nav, display:"flex", flexShrink:0,
         position:"sticky", bottom:0, zIndex:20,
         borderTop:"1px solid rgba(255,255,255,0.06)",

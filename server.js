@@ -320,9 +320,20 @@ async function ensureDatabaseSchema() {
       type TEXT,
       hole_depth DOUBLE PRECISION,
       location TEXT,
+      remarks TEXT,
+      status TEXT,
+      rig TEXT,
+      driller_lookup TEXT,
+      grid TEXT,
       PRIMARY KEY (proj_id, point_id)
     );
   `);
+
+  await db.query("ALTER TABLE points ADD COLUMN IF NOT EXISTS remarks TEXT;");
+  await db.query("ALTER TABLE points ADD COLUMN IF NOT EXISTS status TEXT;");
+  await db.query("ALTER TABLE points ADD COLUMN IF NOT EXISTS rig TEXT;");
+  await db.query("ALTER TABLE points ADD COLUMN IF NOT EXISTS driller_lookup TEXT;");
+  await db.query("ALTER TABLE points ADD COLUMN IF NOT EXISTS grid TEXT;");
 
   await db.query(`
     CREATE TABLE IF NOT EXISTS job_records (
@@ -573,7 +584,12 @@ async function getPoints(projId) {
        point_id AS "POINT_ID",
        type AS "Type",
        hole_depth AS "HoleDepth",
-       location AS "Location"
+       location AS "Location",
+       remarks AS "Remarks",
+       status AS "Status",
+       rig AS "Rig",
+       driller_lookup AS "DrillerLookup",
+       grid AS "Grid"
      FROM points
      WHERE proj_id = $1
      ORDER BY point_id`,
@@ -618,7 +634,9 @@ async function getCoreGsPoints(projId) {
         EndDate AS EndDate,
         LoggedBy AS LoggedBy,
         Driller AS Driller,
+        DrillerLookup AS DrillerLookup,
         Rig AS Rig,
+        Grid AS Grid,
         Status AS Status
       FROM dbo.POINT
       WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID
@@ -648,6 +666,28 @@ async function getHoleTypes() {
     ORDER BY COALESCE(Sort, 2147483647), VALUE;
   `);
   return result.recordset || [];
+}
+
+async function getPointFieldLookups() {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig()) {
+    return {
+      holeTypes: await getHoleTypes(),
+      statuses: [],
+      rigs: [],
+      drillers: [],
+      grids: [],
+    };
+  }
+
+  const [holeTypes, statuses, rigs, drillers, grids] = await Promise.all([
+    getCoreGsLookupValues({ table: "LUT_HoleType" }),
+    getCoreGsLookupValues({ table: "LUT_HoleStatus" }),
+    getCoreGsLookupValues({ table: "Rig" }),
+    getCoreGsLookupValues({ table: "DrillerLookup" }),
+    getCoreGsLookupValues({ table: "Grids" }),
+  ]);
+
+  return { holeTypes, statuses, rigs, drillers, grids };
 }
 
 function normalizeSqlIdentifier(value, fallback = "dbo") {
@@ -829,7 +869,9 @@ async function getCoreGsLookupValues({ schema = "dbo", table, limit = 200 }) {
       SELECT
         MAX(CASE WHEN c.name = 'VALUE' THEN 1 ELSE 0 END) AS has_value,
         MAX(CASE WHEN c.name = 'Description' THEN 1 ELSE 0 END) AS has_description,
-        MAX(CASE WHEN c.name = 'Sort' THEN 1 ELSE 0 END) AS has_sort
+        MAX(CASE WHEN c.name = 'Label' THEN 1 ELSE 0 END) AS has_label,
+        MAX(CASE WHEN c.name = 'Sort' THEN 1 ELSE 0 END) AS has_sort,
+        MAX(CASE WHEN c.name = 'CLNT_ID' THEN 1 ELSE 0 END) AS has_clnt_id
       FROM sys.tables t
       JOIN sys.schemas s ON s.schema_id = t.schema_id
       JOIN sys.columns c ON c.object_id = t.object_id
@@ -841,14 +883,22 @@ async function getCoreGsLookupValues({ schema = "dbo", table, limit = 200 }) {
   const safeLimit = parseLimit(limit, 200, 1000);
   const columns = [
     "VALUE",
-    row.has_description ? "Description" : "CAST(NULL AS nvarchar(4000)) AS Description",
+    row.has_description
+      ? "Description"
+      : row.has_label
+        ? "Label AS Description"
+        : "CAST(NULL AS nvarchar(4000)) AS Description",
     row.has_sort ? "Sort" : "CAST(NULL AS int) AS Sort",
   ].join(", ");
   const orderBy = row.has_sort ? "ORDER BY COALESCE(Sort, 2147483647), VALUE" : "ORDER BY VALUE";
-  const result = await pool.request().query(`
+  const whereClient = row.has_clnt_id ? "AND CLNT_ID = @CLNT_ID" : "";
+  const result = await pool.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .query(`
     SELECT TOP (${safeLimit}) ${columns}
     FROM ${quoteSqlIdentifier(schemaName)}.${quoteSqlIdentifier(tableName)}
     WHERE VALUE IS NOT NULL
+      ${whereClient}
     ${orderBy};
   `);
   return result.recordset || [];
@@ -1013,13 +1063,20 @@ async function upsertCoreGsProject(transaction, project) {
 
 async function upsertCoreGsPoint(transaction, point) {
   const sql = require("mssql");
+  await validateCoreGsPoint(transaction, point);
+
   const result = await transaction.request()
     .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
     .input("PROJ_ID", sql.NVarChar(40), point.PROJ_ID)
     .input("POINT_ID", sql.NVarChar(40), point.POINT_ID)
     .input("HoleDepth", sql.Decimal(6, 2), point.HoleDepth)
     .input("Location", sql.VarChar(sql.MAX), point.Location)
+    .input("Remarks", sql.VarChar(sql.MAX), point.Remarks)
     .input("Type", sql.VarChar(20), point.Type)
+    .input("Status", sql.NVarChar(40), point.Status)
+    .input("Rig", sql.NVarChar(40), point.Rig)
+    .input("DrillerLookup", sql.NVarChar(60), point.DrillerLookup)
+    .input("Grid", sql.NVarChar(40), point.Grid)
     .query(`
       IF EXISTS (
         SELECT 1 FROM dbo.POINT
@@ -1029,33 +1086,80 @@ async function upsertCoreGsPoint(transaction, point) {
         UPDATE dbo.POINT
         SET HoleDepth = @HoleDepth,
             Location = @Location,
-            Type = CASE
-              WHEN @Type IS NULL THEN NULL
-              WHEN EXISTS (SELECT 1 FROM dbo.LUT_HoleType WHERE VALUE = @Type) THEN @Type
-              ELSE NULL
-            END
+            Remarks = @Remarks,
+            Type = @Type,
+            Status = @Status,
+            Rig = @Rig,
+            DrillerLookup = @DrillerLookup,
+            Grid = @Grid
         WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID;
         SELECT CAST('update' AS varchar(10)) AS action;
       END
       ELSE
       BEGIN
-        INSERT INTO dbo.POINT (CLNT_ID, PROJ_ID, POINT_ID, HoleDepth, Location, Type)
+        INSERT INTO dbo.POINT (
+          CLNT_ID, PROJ_ID, POINT_ID, HoleDepth, Location, Remarks, Type, Status, Rig, DrillerLookup, Grid
+        )
         VALUES (
           @CLNT_ID,
           @PROJ_ID,
           @POINT_ID,
           @HoleDepth,
           @Location,
-          CASE
-            WHEN @Type IS NULL THEN NULL
-            WHEN EXISTS (SELECT 1 FROM dbo.LUT_HoleType WHERE VALUE = @Type) THEN @Type
-            ELSE NULL
-          END
+          @Remarks,
+          @Type,
+          @Status,
+          @Rig,
+          @DrillerLookup,
+          @Grid
         );
         SELECT CAST('insert' AS varchar(10)) AS action;
       END
     `);
   return result.recordset?.[0]?.action || "unknown";
+}
+
+async function validateCoreGsPoint(transaction, point) {
+  const sql = require("mssql");
+  if (!point.PROJ_ID || !point.POINT_ID) throw createHttpError(400, "PROJ_ID and POINT_ID are required");
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), point.PROJ_ID)
+    .input("Type", sql.VarChar(20), point.Type)
+    .input("Status", sql.NVarChar(40), point.Status)
+    .input("Rig", sql.NVarChar(40), point.Rig)
+    .input("DrillerLookup", sql.NVarChar(60), point.DrillerLookup)
+    .input("Grid", sql.NVarChar(40), point.Grid)
+    .query(`
+      SELECT
+        CASE WHEN EXISTS (
+          SELECT 1 FROM dbo.PROJECT WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID
+        ) THEN 1 ELSE 0 END AS project_found,
+        CASE WHEN @Type IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.LUT_HoleType WHERE VALUE = @Type
+        ) THEN 1 ELSE 0 END AS type_found,
+        CASE WHEN @Status IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.LUT_HoleStatus WHERE VALUE = @Status
+        ) THEN 1 ELSE 0 END AS status_found,
+        CASE WHEN @Rig IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.Rig WHERE CLNT_ID = @CLNT_ID AND VALUE = @Rig
+        ) THEN 1 ELSE 0 END AS rig_found,
+        CASE WHEN @DrillerLookup IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.DrillerLookup WHERE CLNT_ID = @CLNT_ID AND VALUE = @DrillerLookup
+        ) THEN 1 ELSE 0 END AS driller_found,
+        CASE WHEN @Grid IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.Grids WHERE CLNT_ID = @CLNT_ID AND VALUE = @Grid
+        ) THEN 1 ELSE 0 END AS grid_found;
+    `);
+
+  const row = result.recordset?.[0] || {};
+  if (!row.project_found) throw createHttpError(400, `Project ${point.PROJ_ID} does not exist in CORE-GS`);
+  if (!row.type_found) throw createHttpError(400, `Invalid POINT.Type lookup value: ${point.Type}`);
+  if (!row.status_found) throw createHttpError(400, `Invalid POINT.Status lookup value: ${point.Status}`);
+  if (!row.rig_found) throw createHttpError(400, `Invalid POINT.Rig lookup value: ${point.Rig}`);
+  if (!row.driller_found) throw createHttpError(400, `Invalid POINT.DrillerLookup value: ${point.DrillerLookup}`);
+  if (!row.grid_found) throw createHttpError(400, `Invalid POINT.Grid lookup value: ${point.Grid}`);
 }
 
 async function syncCoreGsProjectsAndPoints({ dryRun = true } = {}) {
@@ -1112,6 +1216,11 @@ async function syncCoreGsPoints(points) {
         Type: nullableText(point.Type),
         HoleDepth: nullableNumber(point.HoleDepth),
         Location: nullableText(point.Location),
+        Remarks: nullableText(point.Remarks),
+        Status: nullableText(point.Status),
+        Rig: nullableText(point.Rig),
+        DrillerLookup: nullableText(point.DrillerLookup),
+        Grid: nullableText(point.Grid),
       });
       if (action === "insert") summary.insert += 1;
       if (action === "update") summary.update += 1;
@@ -1411,19 +1520,32 @@ async function syncPoints(points) {
     await client.query("BEGIN");
     const saved = [];
     for (const point of validPoints) {
+      await ensureCachedProjectForPoint(client, point.PROJ_ID);
       await client.query(
-        `INSERT INTO points (proj_id, point_id, type, hole_depth, location)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO points (
+           proj_id, point_id, type, hole_depth, location, remarks, status, rig, driller_lookup, grid
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (proj_id, point_id) DO UPDATE
          SET type = EXCLUDED.type,
              hole_depth = EXCLUDED.hole_depth,
-             location = EXCLUDED.location`,
+             location = EXCLUDED.location,
+             remarks = EXCLUDED.remarks,
+             status = EXCLUDED.status,
+             rig = EXCLUDED.rig,
+             driller_lookup = EXCLUDED.driller_lookup,
+             grid = EXCLUDED.grid`,
         [
           point.PROJ_ID,
           point.POINT_ID,
           point.Type || null,
           point.HoleDepth ?? null,
           point.Location || null,
+          point.Remarks || null,
+          point.Status || null,
+          point.Rig || null,
+          point.DrillerLookup || null,
+          point.Grid || null,
         ]
       );
       saved.push(`${point.PROJ_ID}:${point.POINT_ID}`);
@@ -1438,6 +1560,50 @@ async function syncPoints(points) {
   } finally {
     client.release();
   }
+}
+
+async function ensureCachedProjectForPoint(client, projId) {
+  const existing = await client.query("SELECT 1 FROM projects WHERE proj_id = $1", [projId]);
+  if (existing.rowCount > 0) return;
+
+  let project = null;
+  if (CORE_GS_ENABLED && hasCoreGsConfig()) {
+    const sql = require("mssql");
+    const pool = await getCoreGsPool();
+    const result = await pool.request()
+      .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+      .input("PROJ_ID", sql.NVarChar(40), projId)
+      .query(`
+        SELECT
+          PROJ_ID AS PROJ_ID,
+          PROJ_NAME AS PROJ_NAME,
+          Location AS Location,
+          Client AS Client,
+          Engineer AS Engineer
+        FROM dbo.PROJECT
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID;
+      `);
+    project = result.recordset?.[0] || null;
+  }
+
+  if (!project) throw createHttpError(400, `Project ${projId} is not cached and could not be read from CORE-GS`);
+
+  await client.query(
+    `INSERT INTO projects (proj_id, proj_name, location, client, engineer)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (proj_id) DO UPDATE
+     SET proj_name = EXCLUDED.proj_name,
+         location = EXCLUDED.location,
+         client = EXCLUDED.client,
+         engineer = EXCLUDED.engineer`,
+    [
+      project.PROJ_ID,
+      project.PROJ_NAME || project.PROJ_ID,
+      project.Location || null,
+      project.Client || null,
+      project.Engineer || null,
+    ]
+  );
 }
 
 async function syncRecords(records) {
@@ -1724,6 +1890,15 @@ async function handleApi(req, res, url) {
       sendJson(res, 200, await getHoleTypes());
     } catch (error) {
       throw createCoreGsError(error, "CORE-GS hole type read");
+    }
+    return;
+  }
+
+  if (url.pathname === "/api/lookups/point-fields" && req.method === "GET") {
+    try {
+      sendJson(res, 200, await getPointFieldLookups());
+    } catch (error) {
+      throw createCoreGsError(error, "CORE-GS point lookup read");
     }
     return;
   }
