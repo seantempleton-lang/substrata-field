@@ -1677,6 +1677,231 @@ async function getCoreGsSptRecords(projId, pointId) {
   });
 }
 
+function nullableDate(value) {
+  const text = nullableText(value);
+  if (!text) return null;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function normalizeCoreRecord(record) {
+  const top = nullableNumber(record.TOP ?? record.top);
+  const base = nullableNumber(record.BASE ?? record.base);
+  const thickness = nullableNumber(record.Thickness) ?? (
+    top !== null && base !== null ? Number((base - top).toFixed(2)) : null
+  );
+  return {
+    id: nullableText(record.id) || `core_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    PROJ_ID: nullableText(record.PROJ_ID),
+    POINT_ID: nullableText(record.POINT_ID),
+    top,
+    base,
+    TCR: nullableNumber(record.TCR),
+    SCR: nullableNumber(record.SCR),
+    RQD: nullableNumber(record.RQD),
+    Remarks: nullableText(record.Remarks ?? record.remarks),
+    Diameter: nullableNumber(record.Diameter),
+    DrillTime: nullableDate(record.DrillTime),
+    Drivability: nullableNumber(record.Drivability),
+    Thickness: thickness,
+    TCRCalc: nullableNumber(record.TCRCalc ?? record.TCR),
+    TCRLength: nullableNumber(record.TCRLength),
+    SCRLength: nullableNumber(record.SCRLength),
+    RQDLength: nullableNumber(record.RQDLength),
+    Method: nullableText(record.Method),
+    created_at: nullableText(record.created_at) || new Date().toISOString(),
+  };
+}
+
+async function validateCoreGsCore(transaction, core) {
+  const sql = require("mssql");
+  if (!core.PROJ_ID || !core.POINT_ID) throw createHttpError(400, "PROJ_ID and POINT_ID are required");
+  if (core.top === null || core.base === null) throw createHttpError(400, "Core TOP and BASE are required");
+  if (core.base <= core.top) throw createHttpError(400, "Core BASE must be greater than TOP");
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), core.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), core.POINT_ID)
+    .input("Drivability", sql.Int, core.Drivability)
+    .query(`
+      SELECT
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM dbo.POINT
+          WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID
+        ) THEN 1 ELSE 0 END AS point_found,
+        CASE WHEN @Drivability IS NULL OR EXISTS (
+          SELECT 1 FROM dbo.LUT_CoreDrivability WHERE VALUE = @Drivability
+        ) THEN 1 ELSE 0 END AS drivability_found;
+    `);
+
+  if (!result.recordset?.[0]?.point_found) {
+    throw createHttpError(400, `Point ${core.PROJ_ID}/${core.POINT_ID} does not exist in CORE-GS`);
+  }
+  if (!result.recordset?.[0]?.drivability_found) {
+    throw createHttpError(400, `Invalid Core.Drivability lookup value: ${core.Drivability}`);
+  }
+}
+
+async function upsertCoreGsCore(transaction, record) {
+  const sql = require("mssql");
+  const core = normalizeCoreRecord(record);
+  await validateCoreGsCore(transaction, core);
+
+  const result = await transaction.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), core.PROJ_ID)
+    .input("POINT_ID", sql.NVarChar(40), core.POINT_ID)
+    .input("TOP", sql.Decimal(5, 2), core.top)
+    .input("BASE", sql.Decimal(5, 2), core.base)
+    .input("TCR", sql.TinyInt, core.TCR)
+    .input("SCR", sql.TinyInt, core.SCR)
+    .input("RQD", sql.TinyInt, core.RQD)
+    .input("Remarks", sql.VarChar(sql.MAX), core.Remarks)
+    .input("Diameter", sql.Int, core.Diameter)
+    .input("DrillTime", sql.DateTime, core.DrillTime)
+    .input("Drivability", sql.Int, core.Drivability)
+    .input("Thickness", sql.Decimal(6, 2), core.Thickness)
+    .input("TCRCalc", sql.Decimal(19, 9), core.TCRCalc)
+    .input("TCRLength", sql.Decimal(6, 2), core.TCRLength)
+    .input("SCRLength", sql.Decimal(6, 2), core.SCRLength)
+    .input("RQDLength", sql.Decimal(6, 2), core.RQDLength)
+    .query(`
+      IF EXISTS (
+        SELECT 1 FROM dbo.Core
+        WHERE CLNT_ID = @CLNT_ID
+          AND PROJ_ID = @PROJ_ID
+          AND POINT_ID = @POINT_ID
+          AND [TOP] = @TOP
+          AND BASE = @BASE
+      )
+      BEGIN
+        UPDATE dbo.Core
+        SET TCR = @TCR,
+            SCR = @SCR,
+            RQD = @RQD,
+            Remarks = @Remarks,
+            Diameter = @Diameter,
+            DrillTime = @DrillTime,
+            Drivability = @Drivability,
+            Thickness = @Thickness,
+            TCRCalc = @TCRCalc,
+            TCRLength = @TCRLength,
+            SCRLength = @SCRLength,
+            RQDLength = @RQDLength
+        WHERE CLNT_ID = @CLNT_ID
+          AND PROJ_ID = @PROJ_ID
+          AND POINT_ID = @POINT_ID
+          AND [TOP] = @TOP
+          AND BASE = @BASE;
+        SELECT CAST('update' AS varchar(10)) AS action;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.Core (
+          CLNT_ID, PROJ_ID, POINT_ID, [TOP], BASE,
+          TCR, SCR, RQD, Remarks, Diameter, DrillTime, Drivability,
+          Thickness, TCRCalc, TCRLength, SCRLength, RQDLength
+        )
+        VALUES (
+          @CLNT_ID, @PROJ_ID, @POINT_ID, @TOP, @BASE,
+          @TCR, @SCR, @RQD, @Remarks, @Diameter, @DrillTime, @Drivability,
+          @Thickness, @TCRCalc, @TCRLength, @SCRLength, @RQDLength
+        );
+        SELECT CAST('insert' AS varchar(10)) AS action;
+      END
+    `);
+  return result.recordset?.[0]?.action || "unknown";
+}
+
+async function syncCoreGsCore(records) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig() || !records.length) return null;
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const transaction = new sql.Transaction(pool);
+  const summary = { total: records.length, insert: 0, update: 0 };
+
+  await transaction.begin();
+  try {
+    for (const record of records) {
+      const action = await upsertCoreGsCore(transaction, record);
+      if (action === "insert") summary.insert += 1;
+      if (action === "update") summary.update += 1;
+    }
+    await transaction.commit();
+    return summary;
+  } catch (error) {
+    await transaction.rollback().catch(() => null);
+    throw error;
+  }
+}
+
+async function getCoreGsCoreRecords(projId, pointId) {
+  if (!CORE_GS_ENABLED || !hasCoreGsConfig()) return [];
+
+  const sql = require("mssql");
+  const pool = await getCoreGsPool();
+  const result = await pool.request()
+    .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+    .input("PROJ_ID", sql.NVarChar(40), projId)
+    .input("POINT_ID", sql.NVarChar(40), pointId)
+    .query(`
+      SELECT
+        PROJ_ID,
+        POINT_ID,
+        [TOP] AS top_depth,
+        BASE AS base_depth,
+        TCR,
+        SCR,
+        RQD,
+        Remarks,
+        Diameter,
+        DrillTime,
+        Drivability,
+        Thickness,
+        TCRCalc,
+        TCRLength,
+        SCRLength,
+        RQDLength
+      FROM dbo.Core
+      WHERE CLNT_ID = @CLNT_ID
+        AND PROJ_ID = @PROJ_ID
+        AND POINT_ID = @POINT_ID
+      ORDER BY [TOP], BASE;
+    `);
+
+  return (result.recordset || []).map(row => ({
+    record_type: "core",
+    record: {
+      id: `core_coregs_${row.PROJ_ID}_${row.POINT_ID}_${row.top_depth}_${row.base_depth}`,
+      job_key: `${row.PROJ_ID}_${row.POINT_ID}`,
+      GEO_ID: null,
+      PROJ_ID: nullableText(row.PROJ_ID),
+      POINT_ID: nullableText(row.POINT_ID),
+      top: nullableNumber(row.top_depth),
+      base: nullableNumber(row.base_depth),
+      TCR: nullableNumber(row.TCR),
+      SCR: nullableNumber(row.SCR),
+      RQD: nullableNumber(row.RQD),
+      Remarks: nullableText(row.Remarks),
+      Diameter: nullableNumber(row.Diameter),
+      DrillTime: row.DrillTime ? new Date(row.DrillTime).toISOString() : null,
+      Drivability: nullableNumber(row.Drivability),
+      Thickness: nullableNumber(row.Thickness),
+      TCRCalc: nullableNumber(row.TCRCalc),
+      TCRLength: nullableNumber(row.TCRLength),
+      SCRLength: nullableNumber(row.SCRLength),
+      RQDLength: nullableNumber(row.RQDLength),
+      Method: null,
+      created_at: new Date().toISOString(),
+      sync_status: "synced",
+      source: "core-gs",
+    },
+  }));
+}
+
 async function getHealth() {
   const db = getPool();
   if (!db) {
@@ -2050,6 +2275,73 @@ async function ensureCachedProjectForPoint(client, projId) {
   );
 }
 
+async function ensureCachedPointForRecord(client, record) {
+  const projId = nullableText(record?.PROJ_ID);
+  const pointId = nullableText(record?.POINT_ID);
+  if (!projId || !pointId) return;
+
+  await ensureCachedProjectForPoint(client, projId);
+
+  const existing = await client.query(
+    "SELECT 1 FROM points WHERE proj_id = $1 AND point_id = $2",
+    [projId, pointId]
+  );
+  if (existing.rowCount > 0) return;
+
+  let point = null;
+  if (CORE_GS_ENABLED && hasCoreGsConfig()) {
+    const sql = require("mssql");
+    const pool = await getCoreGsPool();
+    const result = await pool.request()
+      .input("CLNT_ID", sql.NVarChar(40), CORE_GS_CLNT_ID)
+      .input("PROJ_ID", sql.NVarChar(40), projId)
+      .input("POINT_ID", sql.NVarChar(40), pointId)
+      .query(`
+        SELECT
+          POINT_ID AS POINT_ID,
+          Type AS Type,
+          HoleDepth AS HoleDepth,
+          Location AS Location,
+          Remarks AS Remarks,
+          Status AS Status,
+          Rig AS Rig,
+          DrillerLookup AS DrillerLookup,
+          Grid AS Grid
+        FROM dbo.POINT
+        WHERE CLNT_ID = @CLNT_ID AND PROJ_ID = @PROJ_ID AND POINT_ID = @POINT_ID;
+      `);
+    point = result.recordset?.[0] || null;
+  }
+
+  await client.query(
+    `INSERT INTO points (
+       proj_id, point_id, type, hole_depth, location, remarks, status, rig, driller_lookup, grid
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (proj_id, point_id) DO UPDATE
+     SET type = COALESCE(EXCLUDED.type, points.type),
+         hole_depth = COALESCE(EXCLUDED.hole_depth, points.hole_depth),
+         location = COALESCE(EXCLUDED.location, points.location),
+         remarks = COALESCE(EXCLUDED.remarks, points.remarks),
+         status = COALESCE(EXCLUDED.status, points.status),
+         rig = COALESCE(EXCLUDED.rig, points.rig),
+         driller_lookup = COALESCE(EXCLUDED.driller_lookup, points.driller_lookup),
+         grid = COALESCE(EXCLUDED.grid, points.grid)`,
+    [
+      projId,
+      pointId,
+      nullableText(point?.Type),
+      nullableNumber(point?.HoleDepth),
+      nullableText(point?.Location),
+      nullableText(point?.Remarks),
+      nullableText(point?.Status),
+      nullableText(point?.Rig),
+      nullableText(point?.DrillerLookup),
+      nullableText(point?.Grid),
+    ]
+  );
+}
+
 async function syncRecords(records) {
   const db = getPool();
   if (!db) throw createHttpError(503, "Sync requires PostgreSQL configuration");
@@ -2058,6 +2350,7 @@ async function syncRecords(records) {
   const client = await db.connect();
   const coreGsGeology = [];
   const coreGsSpt = [];
+  const coreGsCore = [];
   let committed = false;
   try {
     await client.query("BEGIN");
@@ -2066,6 +2359,7 @@ async function syncRecords(records) {
       const recordType = item?.record_type;
       const record = item?.record;
       if (!recordType || !record?.id || !record?.PROJ_ID || !record?.POINT_ID) continue;
+      await ensureCachedPointForRecord(client, record);
 
       await client.query(
         `INSERT INTO job_records (
@@ -2092,11 +2386,13 @@ async function syncRecords(records) {
       saved.push(`${recordType}:${record.id}`);
       if (recordType === "geology") coreGsGeology.push(record);
       if (recordType === "spt") coreGsSpt.push(record);
+      if (recordType === "core") coreGsCore.push(record);
     }
     await client.query("COMMIT");
     committed = true;
     await syncCoreGsGeology(coreGsGeology);
     await syncCoreGsSpt(coreGsSpt);
+    await syncCoreGsCore(coreGsCore);
     return saved;
   } catch (error) {
     if (!committed) await client.query("ROLLBACK");
@@ -2111,6 +2407,7 @@ async function getSyncedRecords(projId, pointId) {
   const coreGsRecords = [
     ...(await getCoreGsGeologyRecords(projId, pointId)),
     ...(await getCoreGsSptRecords(projId, pointId)),
+    ...(await getCoreGsCoreRecords(projId, pointId)),
   ];
   if (!db) return coreGsRecords;
 

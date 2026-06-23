@@ -447,6 +447,37 @@ Important lookup:
 
 - `Drivability -> LUT_CoreDrivability.VALUE`
 
+Current implemented write fields:
+
+- `CLNT_ID`
+- `PROJ_ID`
+- `POINT_ID`
+- `TOP`
+- `BASE`
+- `TCR`
+- `SCR`
+- `RQD`
+- `Remarks`
+- `Diameter`
+- `DrillTime`
+- `Drivability`
+- `Thickness`
+- `TCRCalc`
+- `TCRLength`
+- `SCRLength`
+- `RQDLength`
+
+Current Core rules:
+
+- Natural key is `CLNT_ID, PROJ_ID, POINT_ID, TOP, BASE`.
+- `GEO_ID` is not supplied by the app.
+- `rts` is not read or written.
+- `Drivability` is validated against `dbo.LUT_CoreDrivability.VALUE`.
+- Existing Core UI captures TCR length and TCR percent only.
+- SCR and RQD are intentionally out of scope for now because they require more advanced calculations than this phase needs. The sync layer can leave `SCR`, `RQD`, `SCRLength`, and `RQDLength` as `NULL`.
+- Existing CORE-GS Core rows are read back into app history through `/api/sync/records?proj_id=...&point_id=...`.
+- Deleting Core is still local-only. Synced CORE-GS rows will reappear when records are hydrated.
+
 ### Backfill
 
 Table: `dbo.Backfill`
@@ -609,6 +640,7 @@ Pattern:
 
 - IndexedDB stores local pending edits.
 - API receives edits and either writes CORE-GS immediately or stores an app-owned queue entry in Postgres.
+- Before inserting `job_records`, record sync must ensure local Postgres `projects` and `points` parent rows exist. Otherwise `job_records_proj_id_fkey` can fail even when the target CORE-GS project/point exists.
 - Queue replay writes to CORE-GS using the same validation/upsert functions.
 - UI clearly shows pending, synced, and failed states.
 
