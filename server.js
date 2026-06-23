@@ -1504,7 +1504,6 @@ async function upsertCoreGsSpt(transaction, record) {
     .input("POINT_ID", sql.NVarChar(40), spt.POINT_ID)
     .input("Type", sql.NVarChar(2), spt.Type)
     .input("TOP", sql.Decimal(5, 2), spt.top)
-    .input("Base", sql.Decimal(15, 6), spt.Base)
     .input("NValue", sql.Int, spt.nValue)
     .input("Blow1", sql.Int, spt.Blow1)
     .input("Blow2", sql.Int, spt.Blow2)
@@ -1518,7 +1517,6 @@ async function upsertCoreGsSpt(transaction, record) {
     .input("Incr4", sql.Decimal(3, 0), spt.Incr4)
     .input("Incr5", sql.Decimal(3, 0), spt.Incr5)
     .input("Incr6", sql.Decimal(3, 0), spt.Incr6)
-    .input("TotalBlowCount", sql.Int, spt.TotalBlowCount)
     .input("Standard", sql.VarChar(20), spt.Standard)
     .input("Remarks", sql.VarChar(sql.MAX), spt.Remarks)
     .query(`
@@ -1531,8 +1529,7 @@ async function upsertCoreGsSpt(transaction, record) {
       )
       BEGIN
         UPDATE dbo.SPT
-        SET Base = @Base,
-            Type = @Type,
+        SET Type = @Type,
             NValue = @NValue,
             Blow1 = @Blow1,
             Blow2 = @Blow2,
@@ -1546,7 +1543,6 @@ async function upsertCoreGsSpt(transaction, record) {
             Incr4 = @Incr4,
             Incr5 = @Incr5,
             Incr6 = @Incr6,
-            TotalBlowCount = @TotalBlowCount,
             Standard = @Standard,
             Remarks = @Remarks
         WHERE CLNT_ID = @CLNT_ID
@@ -1558,16 +1554,16 @@ async function upsertCoreGsSpt(transaction, record) {
       ELSE
       BEGIN
         INSERT INTO dbo.SPT (
-          CLNT_ID, PROJ_ID, POINT_ID, [TOP], Base, Type, NValue,
+          CLNT_ID, PROJ_ID, POINT_ID, [TOP], Type, NValue,
           Blow1, Blow2, Blow3, Blow4, Blow5, Blow6,
           Incr1, Incr2, Incr3, Incr4, Incr5, Incr6,
-          TotalBlowCount, Standard, Remarks
+          Standard, Remarks
         )
         VALUES (
-          @CLNT_ID, @PROJ_ID, @POINT_ID, @TOP, @Base, @Type, @NValue,
+          @CLNT_ID, @PROJ_ID, @POINT_ID, @TOP, @Type, @NValue,
           @Blow1, @Blow2, @Blow3, @Blow4, @Blow5, @Blow6,
           @Incr1, @Incr2, @Incr3, @Incr4, @Incr5, @Incr6,
-          @TotalBlowCount, @Standard, @Remarks
+          @Standard, @Remarks
         );
         SELECT CAST('insert' AS varchar(10)) AS action;
       END
