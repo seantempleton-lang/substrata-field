@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { createHash, randomBytes, scryptSync, timingSafeEqual } = require("crypto");
 const { URL } = require("url");
+const { handleJobsIntegration } = require("./jobs-integration");
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -2514,6 +2515,7 @@ function serveStatic(res, pathname) {
 }
 
 async function handleApi(req, res, url) {
+  if (await handleJobsIntegration(req, res, url, { points: getPoints, auth: requireAuth, body: readRequestBody, send: sendJson, error: createHttpError })) return;
   if (url.pathname === "/api/health") {
     sendJson(res, 200, await getHealth());
     return;

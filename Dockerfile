@@ -6,6 +6,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY server.js ./
+COPY jobs-integration.js ./
 COPY seed-db.js ./
 COPY api-data.json ./
 COPY .env.example ./

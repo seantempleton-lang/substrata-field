@@ -149,6 +149,7 @@ function ModuleIcon({ name, size=20, color="currentColor", strokeWidth=2 }) {
 const DB_NAME = "substrata-field", DB_VER = 2;
 const STORES  = ["active_job","jobs_cache","geology","spt","core","photos","notes"];
 let _db = null;
+let jobsContext = null;
 
 function openDB() {
   return new Promise((res,rej) => {
@@ -167,7 +168,10 @@ function openDB() {
 }
 
 const dbGet    = (store,id)  => openDB().then(d => new Promise((res,rej) => { const r=d.transaction(store,"readonly").objectStore(store).get(id); r.onsuccess=e=>res(e.target.result); r.onerror=e=>rej(e.target.error); }));
-const dbPut    = (store,rec) => openDB().then(d => new Promise((res,rej) => { const tx=d.transaction(store,"readwrite"); tx.objectStore(store).put(rec); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); }));
+const dbPut    = (store,rec) => openDB().then(d => new Promise((res,rej) => {
+  if (jobsContext && rec.PROJ_ID === jobsContext.PROJ_ID && !rec.dailyLogId && (store === "active_job" || rec.sync_status === "pending")) rec = { ...rec, dailyLogId:jobsContext.dailyLogId };
+  const tx=d.transaction(store,"readwrite"); tx.objectStore(store).put(rec); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error);
+}));
 const dbGetAll = (store)     => openDB().then(d => new Promise((res,rej) => { const r=d.transaction(store,"readonly").objectStore(store).getAll(); r.onsuccess=e=>res(e.target.result); r.onerror=e=>rej(e.target.error); }));
 const dbDelete = (store,id)  => openDB().then(d => new Promise((res,rej) => { const tx=d.transaction(store,"readwrite"); tx.objectStore(store).delete(id); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); }));
 const dbClear  = (store)     => openDB().then(d => new Promise((res,rej) => { const tx=d.transaction(store,"readwrite"); tx.objectStore(store).clear(); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); }));
@@ -649,6 +653,14 @@ function JobsModule({ activeJob, setActiveJob, showToast, syncState, onSyncNow, 
     setBhSearch("");
     await fetchBoreholes(proj.PROJ_ID);
   };
+
+  const jobsProjectApplied = useRef(null);
+  useEffect(() => {
+    if (!activeJob?.jobsContext || activeJob.POINT_ID || jobsProjectApplied.current === activeJob.dailyLogId) return;
+    jobsProjectApplied.current = activeJob.dailyLogId;
+    const project = projects.find(p => p.PROJ_ID === activeJob.PROJ_ID) || { PROJ_ID:activeJob.PROJ_ID, PROJ_NAME:activeJob.PROJ_NAME || activeJob.PROJ_ID };
+    selectProject(project);
+  }, [activeJob?.dailyLogId, activeJob?.PROJ_ID, activeJob?.POINT_ID]);
 
   const activateBorehole = async (bh) => {
     const job = {
@@ -2113,11 +2125,51 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
     return () => clearTimeout(t);
   }, [pendingBlows, s.refusal, s.complete, registerBlow]);
 
+  const getMicrophoneStream = async () => {
+    const constraints = {
+      audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:false },
+    };
+    if (navigator.mediaDevices?.getUserMedia) {
+      return navigator.mediaDevices.getUserMedia(constraints);
+    }
+    const legacyGetUserMedia = navigator.getUserMedia ||
+      navigator.webkitGetUserMedia ||
+      navigator.mozGetUserMedia ||
+      navigator.msGetUserMedia;
+    if (!legacyGetUserMedia) {
+      throw new Error("Microphone API unavailable");
+    }
+    return new Promise((resolve, reject) =>
+      legacyGetUserMedia.call(navigator, constraints, resolve, reject)
+    );
+  };
+
+  const getMicErrorMessage = error => {
+    if (!window.isSecureContext) return "Microphone needs HTTPS or localhost";
+    if (!navigator.mediaDevices?.getUserMedia && !navigator.getUserMedia &&
+        !navigator.webkitGetUserMedia && !navigator.mozGetUserMedia &&
+        !navigator.msGetUserMedia) {
+      return "Microphone not supported in this browser";
+    }
+    if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
+      return "Microphone permission denied";
+    }
+    if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+      return "No microphone found";
+    }
+    if (error?.name === "NotReadableError" || error?.name === "TrackStartError") {
+      return "Microphone is already in use";
+    }
+    return error?.message || "Microphone error";
+  };
+
   const startMic = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
-      const ctx = new (window.AudioContext||window.webkitAudioContext)({sampleRate:44100});
+      if (!window.AudioContext && !window.webkitAudioContext) {
+        throw new Error("Audio processing not supported");
+      }
+      const stream = await getMicrophoneStream();
+      const ctx = new (window.AudioContext||window.webkitAudioContext)();
       if (ctx.state==="suspended") await ctx.resume();
       const src  = ctx.createMediaStreamSource(stream);
       const proc = ctx.createScriptProcessor(2048,1,1);
@@ -2136,7 +2188,10 @@ function SPTTestScreen({ state, setState, onSave, showToast }) {
       src.connect(proc); proc.connect(ctx.destination);
       audioRef.current={ctx,proc,src,stream}; micRef.current=true; bgRms.current=null;
       setMicMode(true);
-    } catch(e) { showToast("Microphone error"); }
+    } catch(e) {
+      console.warn("SPT microphone unavailable", e);
+      showToast(getMicErrorMessage(e));
+    }
   };
 
   const stopMic = () => {
@@ -4716,6 +4771,8 @@ function App() {
   });
   const toastTimer = useRef(null);
   const syncLock = useRef(false);
+  const handoffStarted = useRef(false);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -4748,6 +4805,30 @@ function App() {
       setToast(t => ({ ...t, visible:false })), 2500);
   }, []);
 
+
+
+  useEffect(() => {
+    if (authStatus !== "authenticated" || handoffStarted.current) return;
+    const token = new URLSearchParams(window.location.search).get("handoff");
+    if (!token) {
+      dbGet("active_job", "jobs_context").then(record => { if (record?.context?.user?.employeeCode === currentUser.employeeCode) jobsContext = record.context; });
+      return;
+    }
+    handoffStarted.current = true;
+    authJson("/jobs/handoff", { method:"POST", body:JSON.stringify({ token }) }).then(async ({ context, point }) => {
+      jobsContext = context;
+      await dbPut("active_job", { id:"jobs_context", context });
+      const job = { ...point, id:"active", PROJ_ID:context.PROJ_ID, POINT_ID:context.POINT_ID, dailyLogId:context.dailyLogId, started_at:new Date().toISOString(), sync_status:"synced", jobsContext:true };
+      await dbPut("active_job", job);
+      setActiveJob(job);
+      const modules = { project:"jobs", geology:"geo", spt:"spt", core:"core", installation:"install", backfill:"install", consumables:"notes", photos:"photos" };
+      setActiveModule(context.POINT_ID ? modules[context.allowedModules[0]] || "jobs" : "jobs");
+      window.history.replaceState(null, "", window.location.pathname);
+      showToast("Daily-log context received from Jobs");
+    }).catch(error => { window.history.replaceState(null, "", window.location.pathname); showToast(error.message); });
+  }, [authStatus, currentUser, showToast]);
+
+
   const login = useCallback(async (username, password) => {
     setAuthStatus("checking");
     setAuthError(null);
@@ -4769,6 +4850,8 @@ function App() {
   }, []);
 
   const logout = useCallback(async () => {
+    jobsContext = null;
+    await dbDelete("active_job", "jobs_context");
     try {
       await authJson("/session/logout", { method:"DELETE" });
     } catch (err) {}
@@ -4897,6 +4980,7 @@ function App() {
       flexDirection:"column", color:T.text, fontFamily:T.sans, overflow:"hidden" }}>
 
       {/* ------ HEADER ------ dark nav style */}
+      {jobsContext && <a href={jobsContext.returnUrl} style={{ color:T.amber, padding:"8px", fontSize:12 }}>Return to daily log</a>}
       <div style={{ background:T.nav, padding:"11px 16px 10px",
         flexShrink:0, display:"flex", alignItems:"center", gap:12 }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>

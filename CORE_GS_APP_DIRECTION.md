@@ -211,6 +211,7 @@ Current state:
   - `450 mm = 100%`.
   - Cone SPT tests do not prompt for recovery because no sample is collected.
   - `dbo.SPT` does not have a dedicated recovery column, so the current implementation stores the structured value in the app record payload and writes a compact `Sample recovery: ...` note into `SPT.Remarks` for CORE-GS continuity.
+- SPT microphone blow counting requires browser microphone support and a secure context. If the app is opened on a remote device over plain HTTP, browsers will block the microphone; use HTTPS or localhost.
 - Saved SPT records remain offline-capable through IndexedDB.
 - Pending SPT records sync through `/api/sync/records`.
 - When CORE-GS is enabled, SPT records are upserted into `dbo.SPT`.
